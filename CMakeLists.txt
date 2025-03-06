@@ -9,6 +9,10 @@
 
 cmake_minimum_required(VERSION 3.18)
 
+# Personal Configuration
+set(CMAKE_CUDA_ARCHITECTURES 89 86 75 70)
+set(CMAKE_CUDA_COMPILER "/usr/local/cuda/bin/nvcc")
+
 # Version information
 set(DEME_VERSION_MAJOR   0)
 set(DEME_VERSION_MINOR   0)
