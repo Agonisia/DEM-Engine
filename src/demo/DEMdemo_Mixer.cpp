@@ -28,9 +28,9 @@ int main() {
     
     // Create solver and configure basic settings
     DEMSolver DEMSim;
-    DEMSim.SetVerbosity(STEP_METRIC);
+    // DEMSim.SetVerbosity(STEP_METRIC);
     // For general use cases, you want to set the verbosity to INFO: It's also a bit faster than STEP_METRIC.
-    // DEMSim.SetVerbosity(INFO);
+    DEMSim.SetVerbosity(INFO);
     DEMSim.SetOutputFormat(OUTPUT_FORMAT::VTK);
     DEMSim.SetOutputContent(OUTPUT_CONTENT::ABSV);
     DEMSim.SetMeshOutputFormat(MESH_FORMAT::VTK);
@@ -99,7 +99,7 @@ int main() {
     float mass = 2.6e3 * 5.5886717;  // in kg or g
     float3 MOI = make_float3(2.928, 2.6029, 3.9908) * 2.6e3;
     std::shared_ptr<DEMClumpTemplate> template_granular =
-        DEMSim.LoadClumpType(mass, MOI, GetDEMEDataFile("clumps/6_clump.csv"), mat_type_granular);
+        DEMSim.LoadClumpType(mass, MOI, GetDEMEDataFile("clumps/3_clump.csv"), mat_type_granular);
     template_granular->Scale(granular_rad);
 
     // Create a tracker for the mixer
