@@ -1936,6 +1936,7 @@ void DEMSolver::WriteSphereFile(const std::string& outfilename) const {
         case (OUTPUT_FORMAT::VTK): {
             std::ofstream ptFile(outfilename, std::ios::out);
             dT->writeSpheresAsVtk(ptFile);
+            ptFile.close();
             break;
         }
         case (OUTPUT_FORMAT::BINARY): {
