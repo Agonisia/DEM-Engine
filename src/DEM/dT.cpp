@@ -1402,8 +1402,15 @@ void DEMDynamicThread::writeSpheresAsCsv(std::ofstream& ptFile) {
     ptFile << outstrstream.str();
 }
 
-void DEMDynamicThread::writeSpheresAsVtk(std::ofstream& ptFile) const {
+void DEMDynamicThread::writeSpheresAsVtk(std::ofstream& ptFile) {
     std::ostringstream outstrstream;
+
+    // Migrate data to host (same as CSV version)
+    migrateFamilyToHost();
+    migrateClumpPosInfoToHost();
+    migrateClumpHighOrderInfoToHost();
+    migrateOwnerWildcardToHost();
+    migrateSphGeoWildcardToHost();
 
     // VTK file header
     outstrstream << "# vtk DataFile Version 3.0\n";
@@ -1414,9 +1421,9 @@ void DEMDynamicThread::writeSpheresAsVtk(std::ofstream& ptFile) const {
     // Count spheres that will be output (excluding those in familiesNoOutput)
     size_t numSpheres = 0;
     for (size_t i = 0; i < simParams->nSpheresGM; i++) {
-        auto this_owner = ownerClumpBody.at(i);
-        family_t this_family = familyID.at(this_owner);
-        if (!std::binary_search(familiesNoOutput.begin(), familiesNoOutput.end(), this_family)) {
+        auto this_owner = ownerClumpBody[i];
+        family_t this_family = familyID[this_owner];
+        if (familiesNoOutput.find(this_family) == familiesNoOutput.end()) {
             numSpheres++;
         }
     }
@@ -1443,10 +1450,10 @@ void DEMDynamicThread::writeSpheresAsVtk(std::ofstream& ptFile) const {
     
     // First pass: collect all point coordinates
     for (size_t i = 0; i < simParams->nSpheresGM; i++) {
-        auto this_owner = ownerClumpBody.at(i);
-        family_t this_family = familyID.at(this_owner);
+        auto this_owner = ownerClumpBody[i];
+        family_t this_family = familyID[this_owner];
         // If this (impl-level) family is in the no-output list, skip it
-        if (std::binary_search(familiesNoOutput.begin(), familiesNoOutput.end(), this_family)) {
+        if (familiesNoOutput.find(this_family) != familiesNoOutput.end()) {
             continue;
         }
 
@@ -1454,61 +1461,61 @@ void DEMDynamicThread::writeSpheresAsVtk(std::ofstream& ptFile) const {
         float3 pos;
         float radius;
         float X, Y, Z;
-        voxelID_t voxel = voxelID.at(this_owner);
-        subVoxelPos_t subVoxX = locX.at(this_owner);
-        subVoxelPos_t subVoxY = locY.at(this_owner);
-        subVoxelPos_t subVoxZ = locZ.at(this_owner);
-        hostVoxelIDToPosition<float, voxelID_t, subVoxelPos_t>(X, Y, Z, voxel, subVoxX, subVoxY, subVoxZ,
-                                                               simParams->nvXp2, simParams->nvYp2, simParams->voxelSize,
-                                                               simParams->l);
+        voxelID_t voxel = voxelID[this_owner];
+        subVoxelPos_t subVoxX = locX[this_owner];
+        subVoxelPos_t subVoxY = locY[this_owner];
+        subVoxelPos_t subVoxZ = locZ[this_owner];
+        voxelIDToPosition<float, voxelID_t, subVoxelPos_t>(X, Y, Z, voxel, subVoxX, subVoxY, subVoxZ,
+                                                           simParams->nvXp2, simParams->nvYp2, simParams->voxelSize,
+                                                           simParams->l);
         CoM.x = X + simParams->LBFX;
         CoM.y = Y + simParams->LBFY;
         CoM.z = Z + simParams->LBFZ;
 
-        size_t compOffset = (solverFlags.useClumpJitify) ? clumpComponentOffsetExt.at(i) : i;
+        size_t compOffset = (solverFlags.useClumpJitify) ? clumpComponentOffsetExt[i] : i;
         float3 this_sp_deviation;
-        this_sp_deviation.x = relPosSphereX.at(compOffset);
-        this_sp_deviation.y = relPosSphereY.at(compOffset);
-        this_sp_deviation.z = relPosSphereZ.at(compOffset);
-        float this_sp_rot_0 = oriQw.at(this_owner);
-        float this_sp_rot_1 = oriQx.at(this_owner);
-        float this_sp_rot_2 = oriQy.at(this_owner);
-        float this_sp_rot_3 = oriQz.at(this_owner);
-        hostApplyOriQToVector3<float, float>(this_sp_deviation.x, this_sp_deviation.y, this_sp_deviation.z,
-                                             this_sp_rot_0, this_sp_rot_1, this_sp_rot_2, this_sp_rot_3);
+        this_sp_deviation.x = relPosSphereX[compOffset];
+        this_sp_deviation.y = relPosSphereY[compOffset];
+        this_sp_deviation.z = relPosSphereZ[compOffset];
+        float this_sp_rot_0 = oriQw[this_owner];
+        float this_sp_rot_1 = oriQx[this_owner];
+        float this_sp_rot_2 = oriQy[this_owner];
+        float this_sp_rot_3 = oriQz[this_owner];
+        applyOriQToVector3<float, float>(this_sp_deviation.x, this_sp_deviation.y, this_sp_deviation.z,
+                                         this_sp_rot_0, this_sp_rot_1, this_sp_rot_2, this_sp_rot_3);
         pos = CoM + this_sp_deviation;
         
         // Write point coordinates
         outstrstream << pos.x << " " << pos.y << " " << pos.z << "\n";
 
         // Store other data for later use
-        radius = radiiSphere.at(compOffset);
+        radius = radiiSphere[compOffset];
         radii.push_back(radius);
         
         float3 vxyz, acc;
-        vxyz.x = vX.at(this_owner);
-        vxyz.y = vY.at(this_owner);
-        vxyz.z = vZ.at(this_owner);
+        vxyz.x = vX[this_owner];
+        vxyz.y = vY[this_owner];
+        vxyz.z = vZ[this_owner];
         velocities.push_back(vxyz);
         
         if (solverFlags.outputFlags & OUTPUT_CONTENT::ANG_VEL) {
             float3 ang_v;
-            ang_v.x = omgBarX.at(this_owner);
-            ang_v.y = omgBarY.at(this_owner);
-            ang_v.z = omgBarZ.at(this_owner);
+            ang_v.x = omgBarX[this_owner];
+            ang_v.y = omgBarY[this_owner];
+            ang_v.z = omgBarZ[this_owner];
             angVelocities.push_back(ang_v);
         }
         
-        acc.x = aX.at(this_owner);
-        acc.y = aY.at(this_owner);
-        acc.z = aZ.at(this_owner);
+        acc.x = aX[this_owner];
+        acc.y = aY[this_owner];
+        acc.z = aZ[this_owner];
         accelerations.push_back(acc);
         
         if (solverFlags.outputFlags & OUTPUT_CONTENT::ANG_ACC) {
             float3 ang_acc;
-            ang_acc.x = alphaX.at(this_owner);
-            ang_acc.y = alphaY.at(this_owner);
-            ang_acc.z = alphaZ.at(this_owner);
+            ang_acc.x = alphaX[this_owner];
+            ang_acc.y = alphaY[this_owner];
+            ang_acc.z = alphaZ[this_owner];
             angAccelerations.push_back(ang_acc);
         }
         
@@ -1517,12 +1524,12 @@ void DEMDynamicThread::writeSpheresAsVtk(std::ofstream& ptFile) const {
         // Wildcards
         if (solverFlags.outputFlags & OUTPUT_CONTENT::OWNER_WILDCARD) {
             for (unsigned int j = 0; j < m_owner_wildcard_names.size(); j++) {
-                ownerWildcardsData[j].push_back(ownerWildcards[j][i]);
+                ownerWildcardsData[j].push_back((*ownerWildcards[j])[i]);
             }
         }
         if (solverFlags.outputFlags & OUTPUT_CONTENT::GEO_WILDCARD) {
             for (unsigned int j = 0; j < m_geo_wildcard_names.size(); j++) {
-                geoWildcardsData[j].push_back(sphereWildcards[j][i]);
+                geoWildcardsData[j].push_back((*sphereWildcards[j])[i]);
             }
         }
     }
@@ -1610,25 +1617,29 @@ void DEMDynamicThread::writeSpheresAsVtk(std::ofstream& ptFile) const {
     
     // Write owner wildcards if requested
     if (solverFlags.outputFlags & OUTPUT_CONTENT::OWNER_WILDCARD) {
-        auto name_it = m_owner_wildcard_names.begin();
-        for (unsigned int j = 0; j < m_owner_wildcard_names.size(); j++, name_it++) {
-            outstrstream << "SCALARS " << *name_it << " float 1\n";
+        // The order shouldn't be an issue... the same set is being processed here and in equip_owner_wildcards, see
+        // Model.h
+        unsigned int j = 0;
+        for (const auto& name : m_owner_wildcard_names) {
+            outstrstream << "SCALARS " << name << " float 1\n";
             outstrstream << "LOOKUP_TABLE default\n";
             for (const auto& value : ownerWildcardsData[j]) {
                 outstrstream << value << "\n";
             }
+            j++;
         }
     }
     
     // Write geometry wildcards if requested
     if (solverFlags.outputFlags & OUTPUT_CONTENT::GEO_WILDCARD) {
-        auto name_it = m_geo_wildcard_names.begin();
-        for (unsigned int j = 0; j < m_geo_wildcard_names.size(); j++, name_it++) {
-            outstrstream << "SCALARS " << *name_it << " float 1\n";
+        unsigned int j = 0;
+        for (const auto& name : m_geo_wildcard_names) {
+            outstrstream << "SCALARS " << name << " float 1\n";
             outstrstream << "LOOKUP_TABLE default\n";
             for (const auto& value : geoWildcardsData[j]) {
                 outstrstream << value << "\n";
             }
+            j++;
         }
     }
     
