@@ -2,6 +2,8 @@
 // Reference: "Inter-particle torque scaling in coarse grained DEM with rolling resistance 
 // and particle size distributions" - Hu et al., Powder Technology 438 (2024)
 
+// VERSION_250603: Removed internal time step scaling as per advisor feedback, add calculation for cofficient force 
+
 // Acquire scale_factor_l
 float l = scale_factor_l;
 // Ensure l is valid, default to 1.0 if not properly set or <= 0.
@@ -22,7 +24,7 @@ if (overlap_s > 0) {
 
     if (overlap_o > 0.f) {
         // Material properties from the original model structure
-        float E_cnt, G_cnt, CoR_cnt, mu_cnt, Crr_cnt;
+        float E_cnt, G_cnt, CoR_cnt, mu_cnt, Crr_cnt, Cohesion_coeff;
         {
             float E_A_orig = E[bodyAMatType]; 
             float nu_A_orig = nu[bodyAMatType];
@@ -32,6 +34,7 @@ if (overlap_s > 0) {
             CoR_cnt = CoR[bodyAMatType][bodyBMatType];
             mu_cnt = mu[bodyAMatType][bodyBMatType];
             Crr_cnt = Crr[bodyAMatType][bodyBMatType];
+            Cohesion_coeff = Cohesion[bodyAMatType][bodyBMatType];
         }
 
         // Radius scaling: R_O = R_S / l
@@ -46,12 +49,12 @@ if (overlap_s > 0) {
         float3 locCPA_o = locCPA_s / l;
         float3 locCPB_o = locCPB_s / l;
 
-        // Rotational velocity scaling: ω_O = ω_S / l (CORRECTED from ω_S * l)
+        // Rotational velocity scaling: ω_O = ω_S / l
         // According to Table 1: ω_O = l·ω_S means ω_O = ω_S / l in the original scale
         float3 ARotVel_s = ARotVel;
         float3 BRotVel_s = BRotVel;
-        float3 ARotVel_o = ARotVel_s / l;  // CORRECTED
-        float3 BRotVel_o = BRotVel_s / l;  // CORRECTED
+        float3 ARotVel_o = ARotVel_s / l;
+        float3 BRotVel_o = BRotVel_s / l;
 
         // Calculate rotational velocities at contact points in original scale
         float3 rotVelCPA_o_local = cross(ARotVel_o, locCPA_o);
@@ -66,17 +69,13 @@ if (overlap_s > 0) {
         float mass_o_B = mass_s_B / (l * l * l);
 
         if (mass_o_A <= 0.f) {
-            mass_o_A = 1e-12f
-        };
+            mass_o_A = 1e-12f;
+        }
         if (mass_o_B <= 0.f) {
-            mass_o_B = 1e-12f
-        };
+            mass_o_B = 1e-12f;
+        }
 
-        // Time step scaling: Δt_O = Δt_S / l
-        float ts_s = ts;
-        float ts_o = ts_s / l;
-
-        // Tangential displacement history scaling
+        // Tangential displacement history scaling (without time step scaling)
         float3 delta_tan_s = make_float3(delta_tan_x, delta_tan_y, delta_tan_z);
         float3 delta_tan_o = delta_tan_s / l;
 
@@ -102,12 +101,12 @@ if (overlap_s > 0) {
             const float projection_o = dot(velB2A_o, B2A);
             vrel_tan_o = velB2A_o - projection_o * B2A;
 
-            // Update tangential displacement history
+            // Update tangential displacement history (using ts instead of ts_o)
             {
-                delta_tan_o += ts_o * vrel_tan_o;
+                delta_tan_o += ts * vrel_tan_o;  // Using ts directly (no scaling)
                 const float disp_proj_o = dot(delta_tan_o, B2A);
                 delta_tan_o -= disp_proj_o * B2A;
-                delta_time_o += ts_o;
+                delta_time_o += ts;  // Using ts directly (no scaling)
             }
 
             // Calculate effective mass
@@ -196,13 +195,15 @@ if (overlap_s > 0) {
         // ========================================================================
         float l_sq = l * l;
         float3 F_total_o_vec = F_normal_o_vec + F_tangential_o_vec + torque_only_force_o;
+
+        if (Cohesion_coeff > 0.0f) {
+            float3 F_cohesion_o = Cohesion_coeff * mass_eff_o * (-B2A);
+            F_total_o_vec += F_cohesion_o;
+        }
         force = F_total_o_vec * l_sq;
 
         // Note: If torques are needed separately for rotation calculation,
         // they should also be scaled by l² according to Eq. (25): M_IS = l²·M_IO
-        // Example (if needed):
-        // float3 torque_o = cross(locCPA_o, F_total_o_vec);
-        // torque = torque_o * l_sq;
 
         // ========================================================================
         // SUP Step 4: Update history variables in scaled-up system

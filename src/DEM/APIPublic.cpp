@@ -2012,6 +2012,18 @@ void DEMSolver::WriteContactFile(const std::string& outfilename, float force_thr
     }
 }
 
+void DEMSolver::WriteSphereAndContactFile(const std::string& outfilename, float force_thres) const {
+    std::ofstream ptFile(outfilename, std::ios::out);
+            dT->writeSpheresAndContactsAsVtk(ptFile, force_thres);
+            ptFile.close();
+}
+
+void DEMSolver::WriteUnifiedFile(const std::string& outfilename, float force_thres) const {
+    std::ofstream ptFile(outfilename, std::ios::out);
+            dT->writeUnifiedCsv(ptFile, force_thres);
+            ptFile.close();
+}
+
 void DEMSolver::WriteMeshFile(const std::string& outfilename) const {
     switch (m_mesh_out_format) {
         case (MESH_FORMAT::VTK): {
@@ -2410,6 +2422,7 @@ void DEMSolver::DoDynamicsThenSync(double thisCallDuration) {
 void DEMSolver::ShowThreadCollaborationStats() {
     DEME_PRINTF("\n~~ kT--dT CO-OP STATISTICS ~~\n");
     DEME_PRINTF("Number of steps dynamic executed: %zu\n", dT->nTotalSteps);
+    DEME_PRINTF("Current number of particles: %zu (Clumps: %zu)\n", nOwnerBodies, nOwnerClumps);
     DEME_PRINTF("Number of updates dynamic gets: %zu\n",
                 (dTkT_InteractionManager->schedulingStats.nDynamicUpdates).load());
     DEME_PRINTF("Number of updates kinematic gets: %zu\n",

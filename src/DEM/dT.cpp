@@ -2085,6 +2085,735 @@ void DEMDynamicThread::writeContactsAsCsv(std::ofstream& ptFile, float force_thr
     ptFile << outstrstream.str();
 }
 
+void DEMDynamicThread::writeUnifiedCsv(std::ofstream& ptFile, float force_thres) {
+    std::ostringstream outstrstream;
+    
+    // 迁移所需数据到主机
+    migrateFamilyToHost();
+    migrateClumpPosInfoToHost();
+    migrateClumpHighOrderInfoToHost();
+    migrateContactInfoToHost();
+    
+    // 写入CSV头
+    outstrstream << "X,Y,Z,radius,v_x,v_y,v_z,w_x,w_y,w_z,f_x,f_y,f_z,torque_x,torque_y,torque_z\n";
+    
+    // 创建力和力矩的累加器（按owner索引）
+    std::unordered_map<bodyID_t, float3> ownerForces;
+    std::unordered_map<bodyID_t, float3> ownerTorques;
+    
+    // 第一步：遍历所有接触，累加每个owner的力和力矩
+    for (size_t i = 0; i < *(solverScratchSpace.numContacts); i++) {
+        auto geoA = idGeometryA[i];
+        auto geoB = idGeometryB[i];
+        auto type = contactType[i];
+        
+        float3 forcexyz = contactForces[i];
+        float3 torque = contactTorque_convToForce[i];
+        
+        // 跳过小于阈值的接触
+        if (length(forcexyz + torque) < force_thres) {
+            continue;
+        }
+        
+        // 获取ownerA（球体）
+        auto ownerA = ownerClumpBody[geoA];
+        
+        // 累加力和力矩
+        if (ownerForces.find(ownerA) == ownerForces.end()) {
+            ownerForces[ownerA] = make_float3(0, 0, 0);
+            ownerTorques[ownerA] = make_float3(0, 0, 0);
+        }
+        
+        ownerForces[ownerA] += forcexyz;
+        
+        // 计算力矩（需要从全局转换到局部，然后再转回全局）
+        float4 oriQA;
+        oriQA.w = oriQw[ownerA];
+        oriQA.x = oriQx[ownerA];
+        oriQA.y = oriQy[ownerA];
+        oriQA.z = oriQz[ownerA];
+        
+        float3 torqueLocal = torque;
+        applyOriQToVector3(torqueLocal.x, torqueLocal.y, torqueLocal.z, 
+                          oriQA.w, -oriQA.x, -oriQA.y, -oriQA.z);
+        
+        float3 cntPntALocal = contactPointGeometryA[i];
+        torqueLocal = cross(cntPntALocal, torqueLocal);
+        
+        applyOriQToVector3(torqueLocal.x, torqueLocal.y, torqueLocal.z, 
+                          oriQA.w, oriQA.x, oriQA.y, oriQA.z);
+        
+        ownerTorques[ownerA] += torqueLocal;
+    }
+    
+    // 第二步：输出每个球体的完整信息
+    for (size_t i = 0; i < simParams->nSpheresGM; i++) {
+        auto this_owner = ownerClumpBody[i];
+        family_t this_family = familyID[this_owner];
+        
+        // 跳过不需要输出的family
+        if (familiesNoOutput.find(this_family) != familiesNoOutput.end()) {
+            continue;
+        }
+        
+        // 计算球体位置
+        float3 CoM;
+        voxelID_t voxel = voxelID[this_owner];
+        subVoxelPos_t subVoxX = locX[this_owner];
+        subVoxelPos_t subVoxY = locY[this_owner];
+        subVoxelPos_t subVoxZ = locZ[this_owner];
+        float X, Y, Z;
+        voxelIDToPosition<float, voxelID_t, subVoxelPos_t>(
+            X, Y, Z, voxel, subVoxX, subVoxY, subVoxZ, 
+            simParams->nvXp2, simParams->nvYp2, simParams->voxelSize, simParams->l);
+        
+        CoM.x = X + simParams->LBFX;
+        CoM.y = Y + simParams->LBFY;
+        CoM.z = Z + simParams->LBFZ;
+        
+        // 获取球体相对位置并转换到全局坐标
+        size_t compOffset = (solverFlags.useClumpJitify) ? clumpComponentOffsetExt[i] : i;
+        float3 this_sp_deviation;
+        this_sp_deviation.x = relPosSphereX[compOffset];
+        this_sp_deviation.y = relPosSphereY[compOffset];
+        this_sp_deviation.z = relPosSphereZ[compOffset];
+        
+        float4 oriQ;
+        oriQ.w = oriQw[this_owner];
+        oriQ.x = oriQx[this_owner];
+        oriQ.y = oriQy[this_owner];
+        oriQ.z = oriQz[this_owner];
+        
+        applyOriQToVector3(this_sp_deviation.x, this_sp_deviation.y, this_sp_deviation.z,
+                          oriQ.w, oriQ.x, oriQ.y, oriQ.z);
+        
+        float3 pos = CoM + this_sp_deviation;
+        float radius = radiiSphere[compOffset];
+        
+        // 获取速度
+        float3 vel;
+        vel.x = vX[this_owner];
+        vel.y = vY[this_owner];
+        vel.z = vZ[this_owner];
+        
+        // 获取角速度
+        float3 angVel;
+        angVel.x = omgBarX[this_owner];
+        angVel.y = omgBarY[this_owner];
+        angVel.z = omgBarZ[this_owner];
+        
+        // 获取累加的力和力矩（如果没有接触，则为0）
+        float3 force = make_float3(0, 0, 0);
+        float3 torque = make_float3(0, 0, 0);
+        
+        if (ownerForces.find(this_owner) != ownerForces.end()) {
+            force = ownerForces[this_owner];
+            torque = ownerTorques[this_owner];
+        }
+        
+        // 输出到CSV
+        outstrstream << pos.x << "," << pos.y << "," << pos.z << ","
+                    << radius << ","
+                    << vel.x << "," << vel.y << "," << vel.z << ","
+                    << angVel.x << "," << angVel.y << "," << angVel.z << ","
+                    << force.x << "," << force.y << "," << force.z << ","
+                    << torque.x << "," << torque.y << "," << torque.z << "\n";
+    }
+    
+    ptFile << outstrstream.str();
+}
+
+void DEMDynamicThread::writeSpheresAndContactsAsVtk(std::ofstream& ptFile, float force_thres) {
+    std::ostringstream outstrstream;
+
+    // 迁移所需数据到主机
+    migrateFamilyToHost();
+    migrateClumpPosInfoToHost();
+    migrateClumpHighOrderInfoToHost();
+    migrateOwnerWildcardToHost();
+    migrateSphGeoWildcardToHost();
+    migrateContactInfoToHost();
+
+    // VTK文件头
+    outstrstream << "# vtk DataFile Version 3.0\n";
+    outstrstream << "DEM Simulation: Spheres and Contacts\n";
+    outstrstream << "ASCII\n";
+    outstrstream << "DATASET UNSTRUCTURED_GRID\n";
+    
+    // ========== 第一步：收集球体数据 ==========
+    
+    // 统计要输出的球体数量
+    size_t numSpheres = 0;
+    std::vector<size_t> sphereIndexMap(simParams->nSpheresGM, SIZE_MAX); // 映射原始索引到输出索引
+    
+    for (size_t i = 0; i < simParams->nSpheresGM; i++) {
+        auto this_owner = ownerClumpBody[i];
+        family_t this_family = familyID[this_owner];
+        if (familiesNoOutput.find(this_family) == familiesNoOutput.end()) {
+            sphereIndexMap[i] = numSpheres;
+            numSpheres++;
+        }
+    }
+    
+    // ========== 第二步：收集有效接触数据 ==========
+    
+    struct ContactData {
+        size_t sphereA_idx;
+        size_t sphereB_idx;
+        float3 force;
+        float3 torque;
+        float3 contactPoint;
+        float3 normal;
+        contact_t type;
+        bodyID_t ownerA;  // 用于计算力矩
+        bodyID_t ownerB;
+        std::vector<float> wildcards;  // 存储接触wildcard数据
+    };
+    
+    std::vector<ContactData> validContacts;
+    
+    for (size_t i = 0; i < *(solverScratchSpace.numContacts); i++) {
+        auto geoA = idGeometryA[i];
+        auto geoB = idGeometryB[i];
+        auto type = contactType[i];
+        
+        float3 forcexyz = contactForces[i];
+        // 注意：contactTorque_convToForce 的命名具有误导性
+        // 它实际上存储的是用于计算力矩的力，而不是力矩本身
+        float3 torqueForce = contactTorque_convToForce[i];
+        
+        // 过滤掉力太小的接触
+        if (length(forcexyz + torqueForce) < force_thres) {
+            continue;
+        }
+        
+        // 检查 geoA 是否是有效的球体（而不是其他类型的几何体）
+        if (geoA >= simParams->nSpheresGM) {
+            continue;  // 跳过非球体几何体
+        }
+        
+        auto ownerA = ownerClumpBody[geoA];
+        
+        // 检查球体A是否在输出列表中
+        if (sphereIndexMap[geoA] == SIZE_MAX) {
+            continue;
+        }
+        
+        // 获取接触点和法向量
+        float4 oriQA;
+        float3 CoM, cntPntA, cntPntALocal;
+        {
+            oriQA.w = oriQw[ownerA];
+            oriQA.x = oriQx[ownerA];
+            oriQA.y = oriQy[ownerA];
+            oriQA.z = oriQz[ownerA];
+            
+            voxelID_t voxel = voxelID[ownerA];
+            subVoxelPos_t subVoxX = locX[ownerA];
+            subVoxelPos_t subVoxY = locY[ownerA];
+            subVoxelPos_t subVoxZ = locZ[ownerA];
+            float X, Y, Z;
+            voxelIDToPosition<float, voxelID_t, subVoxelPos_t>(X, Y, Z, voxel, subVoxX, subVoxY, subVoxZ,
+                                                               simParams->nvXp2, simParams->nvYp2, 
+                                                               simParams->voxelSize, simParams->l);
+            CoM.x = X + simParams->LBFX;
+            CoM.y = Y + simParams->LBFY;
+            CoM.z = Z + simParams->LBFZ;
+            
+            cntPntALocal = contactPointGeometryA[i];  // 保存局部坐标系中的接触点
+            cntPntA = cntPntALocal;  // 复制一份用于全局转换
+            applyOriQToVector3(cntPntA.x, cntPntA.y, cntPntA.z, oriQA.w, oriQA.x, oriQA.y, oriQA.z);
+            cntPntA += CoM;
+        }
+        
+        // 计算法向量
+        float3 normal;
+        {
+            size_t compOffset = (solverFlags.useClumpJitify) ? clumpComponentOffsetExt[geoA] : geoA;
+            float3 this_sp_deviation;
+            this_sp_deviation.x = relPosSphereX[compOffset];
+            this_sp_deviation.y = relPosSphereY[compOffset];
+            this_sp_deviation.z = relPosSphereZ[compOffset];
+            applyOriQToVector3<float, float>(this_sp_deviation.x, this_sp_deviation.y, this_sp_deviation.z,
+                                             oriQA.w, oriQA.x, oriQA.y, oriQA.z);
+            float3 pos = CoM + this_sp_deviation;
+            normal = normalize(cntPntA - pos);
+        }
+        
+        // 计算力矩（注意：contactTorque_convToForce 实际上存储的是力，不是力矩）
+        float3 torqueGlobal;
+        {
+            // 将力转换到局部坐标系
+            float3 torqueForceLocal = torqueForce;
+            applyOriQToVector3(torqueForceLocal.x, torqueForceLocal.y, torqueForceLocal.z, 
+                             oriQA.w, -oriQA.x, -oriQA.y, -oriQA.z);
+            // 计算力矩 = 接触点 × 力
+            torqueGlobal = cross(cntPntALocal, torqueForceLocal);
+            // 转回全局坐标系
+            applyOriQToVector3(torqueGlobal.x, torqueGlobal.y, torqueGlobal.z, 
+                             oriQA.w, oriQA.x, oriQA.y, oriQA.z);
+        }
+        
+        ContactData contact;
+        contact.sphereA_idx = sphereIndexMap[geoA];
+        contact.sphereB_idx = SIZE_MAX; // 如果是球-墙接触，这个会保持SIZE_MAX
+        contact.force = forcexyz;
+        contact.torque = torqueGlobal;
+        contact.contactPoint = cntPntA;
+        contact.normal = normal;
+        contact.type = type;
+        contact.ownerA = ownerA;
+        contact.ownerB = getGeoOwnerID(geoB, type);
+        
+        // 收集接触wildcard数据
+        if (solverFlags.cntOutFlags & CNT_OUTPUT_CONTENT::CNT_WILDCARD) {
+            for (unsigned int j = 0; j < m_contact_wildcard_names.size(); j++) {
+                contact.wildcards.push_back((*contactWildcards[j])[i]);
+            }
+        }
+        
+        // 如果是球-球接触，获取球B的索引
+        bool isSphereSpherContact = false;
+        
+        // 检查 geoB 是否是有效的球体索引
+        if (geoB < simParams->nSpheresGM) {
+            // geoB 是球体，检查其owner是否有效
+            auto ownerB = ownerClumpBody[geoB];
+            if (ownerB < simParams->nOwnerBodies) {
+                isSphereSpherContact = true;
+            }
+        }
+        
+        if (isSphereSpherContact && sphereIndexMap[geoB] != SIZE_MAX) {
+            contact.sphereB_idx = sphereIndexMap[geoB];
+        }
+        
+        validContacts.push_back(contact);
+    }
+    
+    // ========== 第三步：写入点数据（球心 + 接触点） ==========
+    
+    size_t totalPoints = numSpheres + validContacts.size();
+    outstrstream << "POINTS " << totalPoints << " float\n";
+    
+    // 首先写入所有球心
+    std::vector<float> radii;
+    std::vector<float3> velocities;
+    std::vector<float3> angVelocities;
+    std::vector<float3> accelerations;
+    std::vector<float3> angAccelerations;
+    std::vector<family_t> families;
+    std::vector<std::vector<float>> ownerWildcardsData;
+    std::vector<std::vector<float>> geoWildcardsData;
+    
+    // 初始化wildcard数据容器
+    if (solverFlags.outputFlags & OUTPUT_CONTENT::OWNER_WILDCARD) {
+        ownerWildcardsData.resize(m_owner_wildcard_names.size());
+    }
+    if (solverFlags.outputFlags & OUTPUT_CONTENT::GEO_WILDCARD) {
+        geoWildcardsData.resize(m_geo_wildcard_names.size());
+    }
+    
+    for (size_t i = 0; i < simParams->nSpheresGM; i++) {
+        if (sphereIndexMap[i] == SIZE_MAX) continue;
+        
+        auto this_owner = ownerClumpBody[i];
+        
+        // 计算球心位置
+        float3 CoM, pos;
+        float X, Y, Z;
+        voxelID_t voxel = voxelID[this_owner];
+        subVoxelPos_t subVoxX = locX[this_owner];
+        subVoxelPos_t subVoxY = locY[this_owner];
+        subVoxelPos_t subVoxZ = locZ[this_owner];
+        voxelIDToPosition<float, voxelID_t, subVoxelPos_t>(X, Y, Z, voxel, subVoxX, subVoxY, subVoxZ,
+                                                           simParams->nvXp2, simParams->nvYp2, 
+                                                           simParams->voxelSize, simParams->l);
+        CoM.x = X + simParams->LBFX;
+        CoM.y = Y + simParams->LBFY;
+        CoM.z = Z + simParams->LBFZ;
+
+        size_t compOffset = (solverFlags.useClumpJitify) ? clumpComponentOffsetExt[i] : i;
+        float3 this_sp_deviation;
+        this_sp_deviation.x = relPosSphereX[compOffset];
+        this_sp_deviation.y = relPosSphereY[compOffset];
+        this_sp_deviation.z = relPosSphereZ[compOffset];
+        float this_sp_rot_0 = oriQw[this_owner];
+        float this_sp_rot_1 = oriQx[this_owner];
+        float this_sp_rot_2 = oriQy[this_owner];
+        float this_sp_rot_3 = oriQz[this_owner];
+        applyOriQToVector3<float, float>(this_sp_deviation.x, this_sp_deviation.y, this_sp_deviation.z,
+                                         this_sp_rot_0, this_sp_rot_1, this_sp_rot_2, this_sp_rot_3);
+        pos = CoM + this_sp_deviation;
+        
+        outstrstream << pos.x << " " << pos.y << " " << pos.z << "\n";
+        
+        // 收集其他数据
+        radii.push_back(radiiSphere[compOffset]);
+        
+        float3 vxyz;
+        vxyz.x = vX[this_owner];
+        vxyz.y = vY[this_owner];
+        vxyz.z = vZ[this_owner];
+        velocities.push_back(vxyz);
+        
+        float3 ang_v;
+        ang_v.x = omgBarX[this_owner];
+        ang_v.y = omgBarY[this_owner];
+        ang_v.z = omgBarZ[this_owner];
+        angVelocities.push_back(ang_v);
+        
+        float3 acc;
+        acc.x = aX[this_owner];
+        acc.y = aY[this_owner];
+        acc.z = aZ[this_owner];
+        accelerations.push_back(acc);
+        
+        float3 ang_acc;
+        ang_acc.x = alphaX[this_owner];
+        ang_acc.y = alphaY[this_owner];
+        ang_acc.z = alphaZ[this_owner];
+        angAccelerations.push_back(ang_acc);
+        
+        families.push_back(familyID[this_owner]);
+        
+        // 收集wildcard数据
+        if (solverFlags.outputFlags & OUTPUT_CONTENT::OWNER_WILDCARD) {
+            for (unsigned int j = 0; j < m_owner_wildcard_names.size(); j++) {
+                ownerWildcardsData[j].push_back((*ownerWildcards[j])[this_owner]);
+            }
+        }
+        if (solverFlags.outputFlags & OUTPUT_CONTENT::GEO_WILDCARD) {
+            for (unsigned int j = 0; j < m_geo_wildcard_names.size(); j++) {
+                geoWildcardsData[j].push_back((*sphereWildcards[j])[i]);
+            }
+        }
+    }
+    
+    // 然后写入所有接触点
+    for (const auto& contact : validContacts) {
+        outstrstream << contact.contactPoint.x << " " << contact.contactPoint.y 
+                     << " " << contact.contactPoint.z << "\n";
+    }
+    
+    // ========== 第四步：写入单元数据 ==========
+    
+    // 球体用点表示，接触用线表示（如果是球-球接触）或向量表示（如果是球-墙接触）
+    size_t numCells = numSpheres + validContacts.size();
+    size_t cellListSize = numSpheres * 2;  // 每个球体：1个计数 + 1个索引
+    
+    // 计算接触的单元列表大小
+    for (const auto& contact : validContacts) {
+        if (contact.sphereB_idx != SIZE_MAX) {
+            cellListSize += 3;  // 线段：1个计数 + 2个索引
+        } else {
+            cellListSize += 2;  // 点：1个计数 + 1个索引
+        }
+    }
+    
+    outstrstream << "CELLS " << numCells << " " << cellListSize << "\n";
+    
+    // 写入球体单元（点）
+    for (size_t i = 0; i < numSpheres; i++) {
+        outstrstream << "1 " << i << "\n";
+    }
+    
+    // 写入接触单元
+    size_t contactPointStartIdx = numSpheres;
+    for (size_t i = 0; i < validContacts.size(); i++) {
+        const auto& contact = validContacts[i];
+        if (contact.sphereB_idx != SIZE_MAX) {
+            // 球-球接触：用线段连接两个球心
+            outstrstream << "2 " << contact.sphereA_idx << " " << contact.sphereB_idx << "\n";
+        } else {
+            // 球-墙接触：用点表示接触点
+            outstrstream << "1 " << (contactPointStartIdx + i) << "\n";
+        }
+    }
+    
+    // ========== 第五步：写入单元类型 ==========
+    
+    outstrstream << "CELL_TYPES " << numCells << "\n";
+    
+    // 球体类型
+    for (size_t i = 0; i < numSpheres; i++) {
+        outstrstream << "1\n";  // VTK_VERTEX
+    }
+    
+    // 接触类型
+    for (const auto& contact : validContacts) {
+        if (contact.sphereB_idx != SIZE_MAX) {
+            outstrstream << "3\n";  // VTK_LINE
+        } else {
+            outstrstream << "1\n";  // VTK_VERTEX
+        }
+    }
+    
+    // ========== 第六步：写入点数据属性 ==========
+    
+    outstrstream << "POINT_DATA " << totalPoints << "\n";
+    
+    // 创建一个标记数组来区分点类型（0=球体，1=接触点）
+    outstrstream << "SCALARS point_type int 1\n";
+    outstrstream << "LOOKUP_TABLE default\n";
+    for (size_t i = 0; i < numSpheres; i++) {
+        outstrstream << "0\n";  // 球体
+    }
+    for (size_t i = 0; i < validContacts.size(); i++) {
+        outstrstream << "1\n";  // 接触点
+    }
+    
+    // 半径（球体有值，接触点为0）
+    outstrstream << "SCALARS radius float 1\n";
+    outstrstream << "LOOKUP_TABLE default\n";
+    for (const auto& r : radii) {
+        outstrstream << r << "\n";
+    }
+    for (size_t i = 0; i < validContacts.size(); i++) {
+        outstrstream << "0\n";
+    }
+    
+    // Family ID（球体有值，接触点为-1）
+    if (solverFlags.outputFlags & OUTPUT_CONTENT::FAMILY) {
+        outstrstream << "SCALARS family int 1\n";
+        outstrstream << "LOOKUP_TABLE default\n";
+        for (const auto& fam : families) {
+            outstrstream << static_cast<int>(fam) << "\n";
+        }
+        for (size_t i = 0; i < validContacts.size(); i++) {
+            outstrstream << "-1\n";
+        }
+    }
+    
+    // 速度（球体有值，接触点为0）
+    if (solverFlags.outputFlags & OUTPUT_CONTENT::VEL) {
+        outstrstream << "VECTORS velocity float\n";
+        for (const auto& v : velocities) {
+            outstrstream << v.x << " " << v.y << " " << v.z << "\n";
+        }
+        for (size_t i = 0; i < validContacts.size(); i++) {
+            outstrstream << "0 0 0\n";
+        }
+    }
+    
+    // 速度大小
+    if (solverFlags.outputFlags & OUTPUT_CONTENT::ABSV) {
+        outstrstream << "SCALARS absv float 1\n";
+        outstrstream << "LOOKUP_TABLE default\n";
+        for (const auto& v : velocities) {
+            outstrstream << length(v) << "\n";
+        }
+        for (size_t i = 0; i < validContacts.size(); i++) {
+            outstrstream << "0\n";
+        }
+    }
+    
+    // 角速度（球体有值，接触点为0）
+    if (solverFlags.outputFlags & OUTPUT_CONTENT::ANG_VEL) {
+        outstrstream << "VECTORS angular_velocity float\n";
+        for (const auto& av : angVelocities) {
+            outstrstream << av.x << " " << av.y << " " << av.z << "\n";
+        }
+        for (size_t i = 0; i < validContacts.size(); i++) {
+            outstrstream << "0 0 0\n";
+        }
+    }
+    
+    // 加速度（球体有值，接触点为0）
+    if (solverFlags.outputFlags & OUTPUT_CONTENT::ACC) {
+        outstrstream << "VECTORS acceleration float\n";
+        for (const auto& acc : accelerations) {
+            outstrstream << acc.x << " " << acc.y << " " << acc.z << "\n";
+        }
+        for (size_t i = 0; i < validContacts.size(); i++) {
+            outstrstream << "0 0 0\n";
+        }
+    }
+    
+    // 加速度大小
+    if (solverFlags.outputFlags & OUTPUT_CONTENT::ABS_ACC) {
+        outstrstream << "SCALARS abs_acc float 1\n";
+        outstrstream << "LOOKUP_TABLE default\n";
+        for (const auto& acc : accelerations) {
+            outstrstream << length(acc) << "\n";
+        }
+        for (size_t i = 0; i < validContacts.size(); i++) {
+            outstrstream << "0\n";
+        }
+    }
+    
+    // 角加速度（球体有值，接触点为0）
+    if (solverFlags.outputFlags & OUTPUT_CONTENT::ANG_ACC) {
+        outstrstream << "VECTORS angular_acceleration float\n";
+        for (const auto& ang_acc : angAccelerations) {
+            outstrstream << ang_acc.x << " " << ang_acc.y << " " << ang_acc.z << "\n";
+        }
+        for (size_t i = 0; i < validContacts.size(); i++) {
+            outstrstream << "0 0 0\n";
+        }
+    }
+    
+    // 接触力（球体为0，接触点有值）
+    if (solverFlags.cntOutFlags & CNT_OUTPUT_CONTENT::FORCE) {
+        outstrstream << "VECTORS contact_force float\n";
+        for (size_t i = 0; i < numSpheres; i++) {
+            outstrstream << "0 0 0\n";
+        }
+        for (const auto& contact : validContacts) {
+            outstrstream << contact.force.x << " " << contact.force.y << " " << contact.force.z << "\n";
+        }
+    }
+    
+    // 接触力矩（球体为0，接触点有值）
+    if (solverFlags.cntOutFlags & CNT_OUTPUT_CONTENT::TORQUE) {
+        outstrstream << "VECTORS contact_torque float\n";
+        for (size_t i = 0; i < numSpheres; i++) {
+            outstrstream << "0 0 0\n";
+        }
+        for (const auto& contact : validContacts) {
+            outstrstream << contact.torque.x << " " << contact.torque.y << " " << contact.torque.z << "\n";
+        }
+    }
+    
+    // 接触法向量（球体为0，接触点有值）
+    if (solverFlags.cntOutFlags & CNT_OUTPUT_CONTENT::NORMAL) {
+        outstrstream << "VECTORS contact_normal float\n";
+        for (size_t i = 0; i < numSpheres; i++) {
+            outstrstream << "0 0 0\n";
+        }
+        for (const auto& contact : validContacts) {
+            outstrstream << contact.normal.x << " " << contact.normal.y << " " << contact.normal.z << "\n";
+        }
+    }
+    
+    // Owner wildcards
+    if (solverFlags.outputFlags & OUTPUT_CONTENT::OWNER_WILDCARD) {
+        unsigned int j = 0;
+        for (const auto& name : m_owner_wildcard_names) {
+            outstrstream << "SCALARS " << name << " float 1\n";
+            outstrstream << "LOOKUP_TABLE default\n";
+            for (const auto& value : ownerWildcardsData[j]) {
+                outstrstream << value << "\n";
+            }
+            for (size_t i = 0; i < validContacts.size(); i++) {
+                outstrstream << "0\n";
+            }
+            j++;
+        }
+    }
+    
+    // Geometry wildcards
+    if (solverFlags.outputFlags & OUTPUT_CONTENT::GEO_WILDCARD) {
+        unsigned int j = 0;
+        for (const auto& name : m_geo_wildcard_names) {
+            outstrstream << "SCALARS " << name << " float 1\n";
+            outstrstream << "LOOKUP_TABLE default\n";
+            for (const auto& value : geoWildcardsData[j]) {
+                outstrstream << value << "\n";
+            }
+            for (size_t i = 0; i < validContacts.size(); i++) {
+                outstrstream << "0\n";
+            }
+            j++;
+        }
+    }
+    
+    // Contact wildcards（球体为0，接触点有值）
+    if (solverFlags.cntOutFlags & CNT_OUTPUT_CONTENT::CNT_WILDCARD) {
+        unsigned int j = 0;
+        for (const auto& name : m_contact_wildcard_names) {
+            outstrstream << "SCALARS cnt_" << name << " float 1\n";  // 添加前缀以区分
+            outstrstream << "LOOKUP_TABLE default\n";
+            // 球体位置输出0
+            for (size_t i = 0; i < numSpheres; i++) {
+                outstrstream << "0\n";
+            }
+            // 接触点位置输出实际值
+            for (const auto& contact : validContacts) {
+                if (j < contact.wildcards.size()) {
+                    outstrstream << contact.wildcards[j] << "\n";
+                } else {
+                    outstrstream << "0\n";  // 如果没有数据则输出0
+                }
+            }
+            j++;
+        }
+    }
+    
+    // ========== 第七步：写入单元数据属性（用于接触线） ==========
+    
+    outstrstream << "CELL_DATA " << numCells << "\n";
+    
+    // 单元类型标记（0=球体，1=球球接触，2=球墙接触）
+    outstrstream << "SCALARS cell_type int 1\n";
+    outstrstream << "LOOKUP_TABLE default\n";
+    for (size_t i = 0; i < numSpheres; i++) {
+        outstrstream << "0\n";  // 球体
+    }
+    for (const auto& contact : validContacts) {
+        if (contact.sphereB_idx != SIZE_MAX) {
+            outstrstream << "1\n";  // 球-球接触
+        } else {
+            outstrstream << "2\n";  // 球-墙接触
+        }
+    }
+    
+    // 接触类型详细信息（使用原始的type映射）
+    outstrstream << "SCALARS contact_type_name int 1\n";
+    outstrstream << "LOOKUP_TABLE default\n";
+    for (size_t i = 0; i < numSpheres; i++) {
+        outstrstream << "-1\n";  // 球体没有接触类型
+    }
+    for (const auto& contact : validContacts) {
+        // 输出原始的接触类型值
+        outstrstream << static_cast<int>(contact.type) << "\n";
+    }
+    
+    // 接触力大小（仅对接触单元有意义）
+    outstrstream << "SCALARS contact_force_magnitude float 1\n";
+    outstrstream << "LOOKUP_TABLE default\n";
+    for (size_t i = 0; i < numSpheres; i++) {
+        outstrstream << "0\n";
+    }
+    for (const auto& contact : validContacts) {
+        outstrstream << length(contact.force) << "\n";
+    }
+    
+    // 接触力矩大小（仅对接触单元有意义）
+    outstrstream << "SCALARS contact_torque_magnitude float 1\n";
+    outstrstream << "LOOKUP_TABLE default\n";
+    for (size_t i = 0; i < numSpheres; i++) {
+        outstrstream << "0\n";
+    }
+    for (const auto& contact : validContacts) {
+        outstrstream << length(contact.torque) << "\n";
+    }
+    
+    // Contact wildcards作为单元数据（球体单元为0，接触单元有值）
+    if (solverFlags.cntOutFlags & CNT_OUTPUT_CONTENT::CNT_WILDCARD) {
+        unsigned int j = 0;
+        for (const auto& name : m_contact_wildcard_names) {
+            outstrstream << "SCALARS cell_cnt_" << name << " float 1\n";  // 添加前缀
+            outstrstream << "LOOKUP_TABLE default\n";
+            // 球体单元输出0
+            for (size_t i = 0; i < numSpheres; i++) {
+                outstrstream << "0\n";
+            }
+            // 接触单元输出实际值
+            for (const auto& contact : validContacts) {
+                if (j < contact.wildcards.size()) {
+                    outstrstream << contact.wildcards[j] << "\n";
+                } else {
+                    outstrstream << "0\n";
+                }
+            }
+            j++;
+        }
+    }
+    
+    ptFile << outstrstream.str();
+}
+
 void DEMDynamicThread::writeMeshesAsVtk(std::ofstream& ptFile) {
     std::ostringstream ostream;
     migrateFamilyToHost();
