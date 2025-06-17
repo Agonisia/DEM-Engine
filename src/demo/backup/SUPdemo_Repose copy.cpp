@@ -78,11 +78,13 @@ int main() {
     DEMSim.SetMaterialPropertyPair("mu", mat_type_walls, mat_type_particles, 0.5);
     DEMSim.SetMaterialPropertyPair("Cohesion", mat_type_walls, mat_type_particles, 0.0);
 
-    // 加载SUP接触力模型
-    auto model_SUP = DEMSim.ReadContactForceModel("ForceModelSUP.cu");
-    model_SUP->SetMustHaveMatProp({"E", "nu", "CoR", "mu", "Crr", "Cohesion"});
-    model_SUP->SetMustPairwiseMatProp({"CoR", "mu", "Crr", "Cohesion"});
-    model_SUP->SetPerContactWildcards({"delta_time", "delta_tan_x", "delta_tan_y", "delta_tan_z", "scale_factor_l"});
+    DEMSim.UseFrictionalHertzianModel();
+
+    // // 加载SUP接触力模型
+    // auto model_SUP = DEMSim.ReadContactForceModel("ForceModelSUP.cu");
+    // model_SUP->SetMustHaveMatProp({"E", "nu", "CoR", "mu", "Crr", "Cohesion"});
+    // model_SUP->SetMustPairwiseMatProp({"CoR", "mu", "Crr", "Cohesion"});
+    // model_SUP->SetPerContactWildcards({"delta_time", "delta_tan_x", "delta_tan_y", "delta_tan_z", "scale_factor_l"});
 
 
     // =========================================================================
@@ -95,21 +97,18 @@ int main() {
     float particle_density = 2500.0;                   // 颗粒密度：2500 kg/m³
     float particle_mass = particle_density * (4.0/3.0) * 3.14159265359 * pow(particle_radius, 3); // 颗粒质量
 
-    // 定义底板和仿真域参数
-    float plate_size = 40 * particle_diameter;        // 40d = 40mm 底板尺寸（根据论文）
-    float plate_thickness = particle_diameter;         // 底板厚度
-    float domain_width = 150 * particle_diameter;     // 150mm 仿真域宽度（足够大以允许溢出）
-    float domain_height = 150 * particle_diameter;    // 150mm 高度（容纳所有下落颗粒）
-    float domain_bottom = -2 * particle_diameter;     // 底部稍低，避免穿透问题
+    // 定义底板和仿真域参数（根据论文）
+    float domain_size = 82;       // 82d × 82d 水平尺寸
+    float domain_height = 30 * particle_diameter;     // 30d 高度
 
     // 定义时间步长
     float step_size = 1e-6;  // 稍微增大时间步长，提高效率
 
-    // 设置仿真域大小
+    // 设置仿真域大小（82d × 82d × 30d）
     DEMSim.InstructBoxDomainDimension(
-        {-domain_width/2, domain_width/2},     // X方向
-        {-domain_width/2, domain_width/2},     // Y方向
-        {domain_bottom, domain_height}         // Z方向
+        {-domain_size/2, domain_size/2},     // X方向：-20d 到 20d
+        {-domain_size/2, domain_size/2},     // Y方向：-20d 到 20d
+        {-1 * particle_diameter, domain_height}       // Z方向：0 到 30d
     );
 
     // 设置边界条件 - 全开放边界（允许颗粒从任意边界离开）
@@ -129,17 +128,12 @@ int main() {
     // 4. GEOMETRY CREATION
     // =========================================================================
 
-    // 创建底板（使用大球模拟平板）
-    auto plate_template = DEMSim.LoadClumpType(
-        1e10,  // 非常大的质量（相当于固定）
-        make_float3(1e10, 1e10, 1e10),  // 非常大的惯性矩
-        {plate_size/2},  // 半径
-        {make_float3(0, 0, -plate_size/2)},  // 位置在底部
-        mat_type_walls
-    );
-    auto plate = DEMSim.AddClumps({plate_template}, {make_float3(0, 0, 0)});
+    // 加载平面网格
+    auto plate = DEMSim.AddWavefrontMeshObject(GetDEMEDataFile("mesh/funnel.obj"), mat_type_walls);
+    
+    // 设置为固定底板
     plate->SetFamily(FAMILY_PLATE);
-    DEMSim.SetFamilyFixed(FAMILY_PLATE);  // 固定底板
+    DEMSim.SetFamilyFixed(FAMILY_PLATE);
 
     // =========================================================================
     // 5. PARTICLE GENERATION
@@ -200,39 +194,36 @@ int main() {
 
     // --- 5.2 Particle Placement ---
 
-    // Define particle generation parameters
-    float insertion_radius = 10 * particle_diameter;   // 10d直径的圆形区域
-    float initial_height = 20 * particle_diameter;      // 起始高度 20d
-    int total_particles = 5000;                        // 总颗粒数
-    int layers = 50;                                    // 分层数
-    float layer_spacing = 2.0 * particle_diameter;      // 层间距
+    // 定义颗粒生成参数（根据论文）
+    float insertion_size = 4.4 * particle_diameter;     // 4.4d × 4.4d 方形插入区域
+    float insertion_top = domain_height;                // 从仿真域顶部开始（30d）
+    float insertion_bottom = 20 * particle_diameter;    // 到底板上方20d为止
+    float insertion_height = insertion_top - insertion_bottom;  // 插入区域高度：10d
+
+    // 计算需要的颗粒数以达到20%的固体体积分数
+    float insertion_volume = insertion_size * insertion_size * insertion_height;
+    float particle_volume = (4.0/3.0) * 3.14159265359 * pow(particle_radius, 3);
+    float target_solid_fraction = 0.20;  // 20%固体体积分数
+    int total_particles = (int)(target_solid_fraction * insertion_volume / particle_volume);
+
+    std::cout << "Insertion region: " << insertion_size/particle_diameter << "d × " 
+              << insertion_size/particle_diameter << "d × " 
+              << insertion_height/particle_diameter << "d" << std::endl;
+    std::cout << "Target particles for 20% solid fraction: " << total_particles << std::endl;
 
     std::vector<std::shared_ptr<DEMClumpTemplate>> input_pile_template_type;
     std::vector<float3> input_pile_xyz;
 
-    // 分层生成颗粒（圆柱形分布，更接近实际投料）
-    for (int layer = 0; layer < layers; layer++) {
-        float z_height = initial_height + layer * layer_spacing;
-        int particles_this_layer = total_particles / layers / 2;
+    // 在插入区域内随机放置颗粒
+    for (int p = 0; p < total_particles; p++) {
+        float3 pos;
+        // 在4.4d × 4.4d × 10d的区域内随机分布
+        pos.x = ((float)rand() / RAND_MAX - 0.5) * insertion_size;
+        pos.y = ((float)rand() / RAND_MAX - 0.5) * insertion_size;
+        pos.z = insertion_bottom + (float)rand() / RAND_MAX * insertion_height;
         
-        for (int p = 0; p < particles_this_layer; p++) {
-            // 在圆形区域内随机分布
-            float r = sqrt((float)rand() / RAND_MAX) * insertion_radius;
-            float theta = 2 * M_PI * (float)rand() / RAND_MAX;
-            
-            float3 pos;
-            pos.x = r * cos(theta);
-            pos.y = r * sin(theta);
-            pos.z = z_height;
-            
-            // 添加轻微的随机偏移，避免过于规则
-            pos.x += ((float)rand() / RAND_MAX - 0.5) * particle_radius * 0.2;
-            pos.y += ((float)rand() / RAND_MAX - 0.5) * particle_radius * 0.2;
-            pos.z += ((float)rand() / RAND_MAX - 0.5) * particle_radius * 0.2;
-            
-            input_pile_xyz.push_back(pos);
-            input_pile_template_type.push_back(clump_types[rand() % num_template]);
-        }
+        input_pile_xyz.push_back(pos);
+        input_pile_template_type.push_back(clump_types[rand() % num_template]);
     }
 
     // Add clumps to simulation
@@ -240,6 +231,7 @@ int main() {
     the_pile->SetFamily(FAMILY_PARTICLES);
 
     std::cout << "Generated " << input_pile_xyz.size() << " particles" << std::endl;
+    std::cout << "Actual solid fraction: " << (input_pile_xyz.size() * particle_volume / insertion_volume) * 100 << "%" << std::endl;
 
     // =========================================================================
     // 6. SIMULATION INITIALIZATION 
@@ -272,13 +264,15 @@ int main() {
     // Main simulation loop
     for (int i = 0; i < 20; i++) {
         // 生成输出文件名
-        char outputfile[200], unifiedfile[200];
+        char outputfile[200], unifiedfile[200], meshfile[200];
         sprintf(unifiedfile, "%s/SUPdemo_unified_%04d.csv", out_dir.c_str(), i);                
         sprintf(outputfile, "%s/SUPdemo_output_%04d.vtk", sub_dir.c_str(), i);
+        sprintf(meshfile, "%s/plate_%04d.vtk", out_dir.c_str(), i);
         
         // 写入输出文件
         DEMSim.WriteSphereAndContactFile(std::string(outputfile));
         DEMSim.WriteUnifiedFile(std::string(unifiedfile));
+        DEMSim.WriteMeshFile(std::string(meshfile));
         
         // Progress report
         std::cout << "Frame: " << i << std::endl;

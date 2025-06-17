@@ -69,7 +69,7 @@ int main() {
     float funnel_bottom = 0.f;          // Z-coordinate of funnel bottom
     
     // Set simulation domain size
-    DEMSim.InstructBoxDomainDimension({-10, 10}, {-10, 10}, {funnel_bottom - 10.f, funnel_bottom + 20.f});
+    DEMSim.InstructBoxDomainDimension({-10, 10}, {-10, 10}, {funnel_bottom - 5.f, funnel_bottom + 25.f});
     
     // Set boundary conditions
     DEMSim.InstructBoxDomainBoundingBC("top_open", mat_type_walls);
@@ -92,8 +92,7 @@ int main() {
     // =========================================================================
     
     // Add fixed geometries
-    auto funnel = DEMSim.AddWavefrontMeshObject(GetDEMEDataFile("mesh/funnel.obj"), mat_type_walls);
-    funnel->Scale(0.15);
+    auto funnel = DEMSim.AddWavefrontMeshObject(GetDEMEDataFile("mesh/plane_20by20.obj"), mat_type_walls);
     
     /* Commented out ground creation
     // First create clump type 0 for representing the ground
@@ -110,9 +109,9 @@ int main() {
     // Template generation parameters
     int num_template = 6;               // Total number of random clump templates
     int min_sphere = 1;                 // Minimum number of spheres per clump
-    int max_sphere = 5;                 // Maximum number of spheres per clump
+    int max_sphere = 1;                 // Maximum number of spheres per clump
     float min_rad = 0.01 * scaling;     // Minimum radius of component spheres
-    float max_rad = 0.02 * scaling;     // Maximum radius of component spheres
+    float max_rad = 0.01 * scaling;     // Maximum radius of component spheres
     float min_relpos = -0.01 * scaling; // Minimum relative position of spheres
     float max_relpos = 0.01 * scaling;  // Maximum relative position of spheres
     
@@ -164,10 +163,10 @@ int main() {
     // --- 5.2 Particle Placement ---
     
     // Define particle filling region
-    float spacing = 0.08 * scaling;     // Spacing between particles
+    float spacing = 0.32 * scaling;     // Spacing between particles
     float fill_width = 5.f;             // Width of the fill region
     float fill_height = 2.f * fill_width; // Height of the fill region
-    float fill_bottom = funnel_bottom + fill_width + spacing; // Bottom of the fill region
+    float fill_bottom = funnel_bottom + spacing; // Bottom of the fill region
     
     // Set up Poisson Disk Sampling
     PDSampler sampler(spacing);
@@ -212,7 +211,7 @@ int main() {
     
     // Create output directory
     path out_dir = current_path();
-    out_dir += "/DemoOutput_Repose_SUP";
+    out_dir += "/DemoOutput_Repose";
     create_directory(out_dir);
 
     // =========================================================================
@@ -223,16 +222,16 @@ int main() {
     
     // Main simulation loop
     for (int i = 0; i < 22; i++) {
-        // Generate output filenames
-        char filename[200], meshfile[200], contactfile[200];
-        sprintf(filename, "%s/DEMdemo_output_%04d.csv", out_dir.c_str(), i);
-        sprintf(meshfile, "%s/DEMdemo_funnel_%04d.vtk", out_dir.c_str(), i);
-        sprintf(contactfile, "%s/DEMdemo_contacts_%04d.csv", out_dir.c_str(), i);
+        // 生成输出文件名
+        char outputfile[200], unifiedfile[200], meshfile[200];
+        sprintf(unifiedfile, "%s/SUPdemo_unified_%04d.csv", out_dir.c_str(), i);                
+        sprintf(outputfile, "%s/SUPdemo_output_%04d.vtk", out_dir.c_str(), i);
+        sprintf(meshfile, "%s/plate_%04d.vtk", out_dir.c_str(), i);
         
-        // Write output files
-        DEMSim.WriteSphereFile(std::string(filename));
+        // 写入输出文件
+        DEMSim.WriteSphereAndContactFile(std::string(outputfile));
+        DEMSim.WriteUnifiedFile(std::string(unifiedfile));
         DEMSim.WriteMeshFile(std::string(meshfile));
-        DEMSim.WriteContactFile(std::string(contactfile));
         
         // Progress report
         std::cout << "Frame: " << i << std::endl;
