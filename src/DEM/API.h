@@ -494,6 +494,11 @@ class DEMSolver {
     /// @return A vector of float3 representing the global coordinates of the mesh nodes.
     std::vector<float3> GetMeshNodesGlobal(bodyID_t ownerID);
 
+        /// Write the unified contact file, which contains both contact and spheres.
+    void WriteUnifiedFile(const std::string& outfilename, float force_thres = DEME_TINY_FLOAT) const;
+    /// Write the current status of shperes and their contact pairs to a file.
+    void WriteSphereAndContactFile(const std::string& outfilename, float force_thres = DEME_TINY_FLOAT) const;
+    void WriteSphereAndContactFile(const std::filesystem::path& outfilename) const {WriteSphereAndContactFile(outfilename.string()); }
     /// @brief Get all clump--clump contact ID pairs in the simulation system. Note all GetContact-like methods reports
     /// potential contacts (not necessarily confirmed contacts), meaning they are similar to what
     /// WriteContactFileIncludingPotentialPairs does, not what WriteContactFile does.

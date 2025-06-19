@@ -56,10 +56,10 @@ int main() {
     auto mat_type_walls = DEMSim.LoadMaterial({
         {"E", 1e8},         // 杨氏模量
         {"nu", 0.3},        // 泊松比
-        {"CoR", 0.3},       // 恢复系数
-        {"mu", 1},          // 滑动摩擦系数
-        {"Crr", 0.06},      // 滚动摩擦系数
-        {"Cohesion", 0.1}   // 粘聚力
+        {"CoR", 0.7},       // 恢复系数
+        {"mu", 0.2},        // 滑动摩擦系数
+        {"Crr", 0.1},       // 滚动摩擦系数
+        {"Cohesion", 0.05}   // 粘聚力
     });
 
     // 定义颗粒材料
@@ -67,16 +67,16 @@ int main() {
         {"E", 1e8},         
         {"nu", 0.3},        
         {"CoR", 0.7},        
-        {"mu", 0.5},
-        {"Crr", 0.03},
+        {"mu", 0.2},
+        {"Crr", 0.1},
         {"Cohesion", 0.05}
     });
     
     // 设置材料相互作用属性
-    DEMSim.SetMaterialPropertyPair("CoR", mat_type_walls, mat_type_particles, 0.3);
-    DEMSim.SetMaterialPropertyPair("Crr", mat_type_walls, mat_type_particles, 0.5);
-    DEMSim.SetMaterialPropertyPair("mu", mat_type_walls, mat_type_particles, 0.5);
-    DEMSim.SetMaterialPropertyPair("Cohesion", mat_type_walls, mat_type_particles, 0.1);
+    DEMSim.SetMaterialPropertyPair("CoR", mat_type_walls, mat_type_particles, 0.7);
+    DEMSim.SetMaterialPropertyPair("mu", mat_type_walls, mat_type_particles, 0.2);
+    DEMSim.SetMaterialPropertyPair("Crr", mat_type_walls, mat_type_particles, 0);
+    DEMSim.SetMaterialPropertyPair("Cohesion", mat_type_walls, mat_type_particles, 0);
  
     // DEMSim.UseFrictionalHertzianModel();
 
@@ -92,6 +92,7 @@ int main() {
     // =========================================================================
 
     // 颗粒基本参数
+    float atribute_mm = 0.001f;
     float particle_diameter = 0.0005f;  // 0.5mm直径
     float particle_radius = particle_diameter / 2.0f;  // 半径
     float particle_density = 1000.0;                   // 颗粒密度：1000 kg/m³ （塑料颗粒）
@@ -100,7 +101,7 @@ int main() {
     float plate_bottom = 0.f;          // Z坐标：底板位置
 
     // 定义底板和仿真域参数（根据论文）
-    float domain_size = 50 * particle_diameter;       // 30d × 30d 水平尺寸
+    float domain_size = 80 * atribute_mm;       // 30d × 30d 水平尺寸
 
     // 定义时间步长
     float step_size = 5e-7; 
@@ -109,7 +110,7 @@ int main() {
     DEMSim.InstructBoxDomainDimension(
         {-domain_size/2, domain_size/2},            // X方向：-25d, 25d
         {-domain_size/2, domain_size/2},            // Y方向：-25d, 25d
-        {(plate_bottom - 5) * particle_diameter, (plate_bottom + 395) * particle_diameter}      // Z方向：-5d, 295d
+        {(plate_bottom - 5) * particle_diameter, (plate_bottom + 695) * particle_diameter}      // Z方向：-5d, 295d
     );
 
     // 设置边界条件 - 顶部开放
@@ -130,8 +131,8 @@ int main() {
     // =========================================================================
 
     // 加载平面网格
-    auto plate = DEMSim.AddWavefrontMeshObject(GetDEMEDataFile("mesh/plane_20by20.obj"), mat_type_walls);
-    plate->Scale(0.005);
+    auto plate = DEMSim.AddWavefrontMeshObject(GetDEMEDataFile("mesh/plate40mm_2.obj"), mat_type_walls);
+    plate->Scale(2);
 
     // 设置为固定底板
     plate->SetFamily(FAMILY_PLATE);
@@ -198,10 +199,11 @@ int main() {
     // --- 5.2 Particle Placement ---
 
     // 插入区域参数
-    float spacing = particle_diameter * 1.6f;                   // 粒子间距
-    float insertion_size = 16.0f * particle_diameter;           // 20d × 20d 方形插入区域
-    float insertion_top = 190.0f * particle_diameter;            // 从仿真域顶部290d开始 
-    float insertion_bottom = 10.0f * particle_diameter;         // 到底板上方30d为止
+
+    float spacing = particle_diameter * 1.8f;                   // 粒子间距
+    float insertion_size = 38.0f * particle_diameter;           // 20d × 20d 方形插入区域
+    float insertion_top = 590.0f * particle_diameter;            // 从仿真域顶部390d开始 
+    float insertion_bottom = 10.0f * particle_diameter;         // 到底板上方10d为止
     float insertion_height = insertion_top - insertion_bottom;  // 插入区域高度
 
     // 设置泊松盘采样器
@@ -245,7 +247,7 @@ int main() {
         // 移动到下一层
         layer_z += spacing;
         
-        std::cout << "Layer at z=" << layer_z << ", generated " << layer_xyz.size() << " particles" << std::endl;
+        // std::cout << "Layer at z=" << layer_z << ", generated " << layer_xyz.size() << " particles" << std::endl;
     }
 
     // Add clumps to simulation
@@ -299,7 +301,7 @@ int main() {
     std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now();
     
     // Main simulation loop
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 20; i++) {
         // 生成输出文件名
         char outputfile[200], unifiedfile[200], meshfile[200];
         sprintf(unifiedfile, "%s/SUPdemo_unified_%04d.csv", out_dir.c_str(), i);                
@@ -314,8 +316,8 @@ int main() {
         // Progress report
         std::cout << "Frame: " << i << std::endl;
         
-        // Advance simulation by 0.1 seconds
-        DEMSim.DoDynamics(1e-1); // 0.1 seconds time step
+        // Advance simulation by 0.05 seconds
+        DEMSim.DoDynamics(5e-2); // 0.05 seconds time step
         DEMSim.ShowThreadCollaborationStats();
     }
 
