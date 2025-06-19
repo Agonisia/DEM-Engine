@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  deme:
+    build: .
+    image: deme:latest
+    container_name: deme-dev
+    volumes:
+      # Windows路径示例
+      # - C:\Users\YourName\DEM-Engine:/workspace
+      # WSL路径示例
+      - .:/workspace
+      - ./results:/results
+    environment:
+      - OMP_NUM_THREADS=8
+    stdin_open: true
+    tty: true
+    command: /bin/bash
