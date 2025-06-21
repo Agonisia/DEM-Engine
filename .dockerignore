@@ -1,7 +1,37 @@
+# Windows
+.vs/
+*.vcxproj*
+*.sln
+x64/
+Debug/
+Release/
+
+# General
 build/
 .git/
 *.o
+*.a
 *.so
+*.exe
+*.dll
 results/
 __pycache__/
 *.pyc
+.cacheo
+
+# CMake
+CMakeCache.txt
+CMakeFileso
+
+# Docker folder
+.devcontainer/
+
+# Data and output
+output/
+*.vtk
+*.csv
+
+# Documentation
+docs/
+*.md
+!README.md
