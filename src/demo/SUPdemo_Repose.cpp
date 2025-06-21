@@ -59,7 +59,7 @@ int main() {
         {"CoR", 0.3},       // 恢复系数
         {"mu", 1},          // 滑动摩擦系数
         {"Crr", 0.06},      // 滚动摩擦系数
-        {"SuE", 0.1}        // 粘聚力
+        {"Cohesion", 0.1}        // 粘聚力
     });
 
     // 定义颗粒材料
@@ -69,21 +69,21 @@ int main() {
         {"CoR", 0.7},        
         {"mu", 0.5},
         {"Crr", 0.03},
-        {"SuE", 0.05}
+        {"Cohesion", 0.05}
     });
     
     // 设置材料相互作用属性
     DEMSim.SetMaterialPropertyPair("CoR", mat_type_walls, mat_type_particles, 0.3);
     DEMSim.SetMaterialPropertyPair("Crr", mat_type_walls, mat_type_particles, 0.5);
     DEMSim.SetMaterialPropertyPair("mu", mat_type_walls, mat_type_particles, 0.5);
-    DEMSim.SetMaterialPropertyPair("SuE", mat_type_walls, mat_type_particles, 0.05);
+    DEMSim.SetMaterialPropertyPair("Cohesion", mat_type_walls, mat_type_particles, 0.05);
  
     // DEMSim.UseFrictionalHertzianModel();
 
     // // 加载SUP接触力模型
     auto model_SUP = DEMSim.ReadContactForceModel("ForceModelSUP.cu");
-    model_SUP->SetMustHaveMatProp({"E", "nu", "CoR", "mu", "Crr", "SuE"});
-    model_SUP->SetMustPairwiseMatProp({"CoR", "mu", "Crr", "SuE"});
+    model_SUP->SetMustHaveMatProp({"E", "nu", "CoR", "mu", "Crr", "Cohesion"});
+    model_SUP->SetMustPairwiseMatProp({"CoR", "mu", "Crr", "Cohesion"});
     model_SUP->SetPerContactWildcards({"delta_time", "delta_tan_x", "delta_tan_y", "delta_tan_z", "scale_factor_l"});
 
 

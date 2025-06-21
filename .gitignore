@@ -1,10 +1,32 @@
-build*
-.vscode/
-*.vtk
-*.csv
-*.egg-info/
-.cache/
-dist/
-output/*
-post/*
+# Build directories
+build/
+cmake-build-*/
+out/
+x64/
+Debug/
+Release/
 
+# Windows specific
+*.exe
+*.dll
+*.lib
+*.pdb
+.vs/
+*.vcxproj.user
+
+# WSL/Linux specific
+*.so
+*.a
+
+# IDE
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Results
+results/
+output/

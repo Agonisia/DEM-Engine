@@ -35,7 +35,7 @@ if (overlap_s > 0) {
             CoR_cnt = CoR[bodyAMatType][bodyBMatType];
             mu_cnt = mu[bodyAMatType][bodyBMatType];
             Crr_cnt = Crr[bodyAMatType][bodyBMatType];
-            gamma_surf = SuE[bodyAMatType][bodyBMatType]; // 表面能
+            gamma_surf = Cohesion[bodyAMatType][bodyBMatType]; // 表面能
         }
 
         // 半径缩放：R_O = R_S / l

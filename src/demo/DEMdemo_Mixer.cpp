@@ -179,8 +179,7 @@ int main() {
     // =========================================================================
     
     // Create output directory
-    path out_dir = current_path();
-    out_dir /= "DemoOutput_Mixer";
+    path out_dir = current_path() / "output" / "DemoOutput_Mixer";
     create_directory(out_dir);
     
     // Define output parameters
