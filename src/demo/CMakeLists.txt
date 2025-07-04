@@ -41,6 +41,8 @@ SET(DEMOS
 		DEMdemo_Hopper_Sphere_Cylinder
 		DEMdemo_Fracture_Box
 		SUPdemo_Repose
+		SUPdemo_BulkDensity
+		SUPdemo_TestOverlap
 )
 
 # ------------------------------------------------------------------------------

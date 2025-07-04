@@ -1,9 +1,14 @@
 // 基于 FullHertzianForceModel.cu 修改，用于缩放颗粒（SUP）模型
-// 参考文献："Inter-particle torque scaling in coarse grained DEM with rolling resistance 
+// 参考文献：
+// "Inter-particle torque scaling in coarse grained DEM with rolling resistance 
 // and particle size distributions" - Hu et al., Powder Technology 438 (2024)
+// "implified Johnson-Kendall-Roberts (SJKR) Contact Model - Implementation in PFC"
+// - C.J. Coetzee, 2020
 
-// VERSION_250603: 根据导师反馈移除了内部时间步缩放，添加了系数力计算
+// VERSION_250603: 移除了内部时间步缩放
 // VERSION_250604: 添加了JKR粘附力模型
+// VERSION_250630：修改JKR模型为SJKR-F
+// VERSION_250701：修改JKR模型为更简单的计算
 
 // 获取缩放因子 l
 float l = scale_factor_l;
@@ -24,6 +29,7 @@ if (overlap_s > 0) {
     float overlap_o = overlap_s / l;
 
     if (overlap_o > 0.f) {
+        printf("overlap_s: %f, overlap_o: %f\n", overlap_s, overlap_o);
         // 从原始模型结构中获取材料属性
         float E_cnt, G_cnt, CoR_cnt, mu_cnt, Crr_cnt, gamma_surf;
         {
@@ -36,6 +42,7 @@ if (overlap_s > 0) {
             mu_cnt = mu[bodyAMatType][bodyBMatType];
             Crr_cnt = Crr[bodyAMatType][bodyBMatType];
             gamma_surf = Cohesion[bodyAMatType][bodyBMatType]; // 表面能
+            
         }
 
         // 半径缩放：R_O = R_S / l
@@ -90,10 +97,12 @@ if (overlap_s > 0) {
         // 初始化原始尺度下的力分量
         float3 F_normal_o_vec = make_float3(0.f, 0.f, 0.f);
         float3 F_tangential_o_vec = make_float3(0.f, 0.f, 0.f);
+        float3 F_hertz_o_vec = make_float3(0.f, 0.f, 0.f);
+        float3 F_adhesion_o_vec = make_float3(0.f, 0.f, 0.f);
         float3 torque_only_force_o = make_float3(0.f, 0.f, 0.f);
 
         // ========================================================================
-        // SUP 步骤 2：在原始尺度下计算力（使用 JKR 模型）
+        // SUP 步骤 2：在原始尺度下计算力（使用 SJKR-F 模型）
         // ========================================================================
         {
             // 计算原始尺度下的相对速度
@@ -120,93 +129,83 @@ if (overlap_s > 0) {
             }
 
             // 计算有效半径
-            if (R_o_A <= 1.0e-12f && R_o_B <= 1.0e-12f) { R_star_o = 1.0e-6f; }
-            else if (R_o_A <= 1.0e-12f) { R_star_o = R_o_B; }
-            else if (R_o_B <= 1.0e-12f) { R_star_o = R_o_A; }
-            else { R_star_o = (R_o_A * R_o_B) / (R_o_A + R_o_B); }
+            if (R_o_A <= 1.0e-12f && R_o_B <= 1.0e-12f) {
+                R_star_o = 1.0e-6f;
+            } else if (R_o_A <= 1.0e-12f) {
+                R_star_o = R_o_B;
+            } else if (R_o_B <= 1.0e-12f) {
+                R_star_o = R_o_A;
+            } else {
+                R_star_o = (R_o_A * R_o_B) / (R_o_A + R_o_B);
+            }
 
-            sqrt_Rd_o = sqrtf(overlap_o * R_star_o);
+            sqrt_Rd_o = sqrtf(overlap_o * R_star_o); // 计算 a = sqrt(R_e * δ)，接触半径
             
             // 计算阻尼系数
             const float loge_o = (CoR_cnt < DEME_TINY_FLOAT) ? logf(DEME_TINY_FLOAT) : logf(CoR_cnt);
-            beta_o = loge_o / sqrtf(loge_o * loge_o + deme::PI_SQUARED);
+            beta_o = loge_o / sqrtf(loge_o * loge_o + deme::PI_SQUARED); // beta_o = loge / sqrt(loge² + π²)
 
-            // JKR 模型实现
-            if (gamma_surf > 0.0f && overlap_o > -0.1f * R_star_o) {
-                // JKR 模型：求解接触半径 a
-                // 方程：a^4 - 2*R_star*delta_n*a^2 - (4*PI*gamma*R_star^2/E_star)*a + R_star^2*delta_n^2 = 0
-                
-                // 平衡接触半径（零载荷时）
-                float a0 = powf(9.0f * deme::PI * gamma_surf * R_star_o * R_star_o / E_cnt, 1.0f/3.0f);
-                
-                // 初始猜测值
-                float a = sqrtf(R_star_o * fmaxf(overlap_o, 0.0f)) + 0.5f * a0;
-                
-                // 牛顿-拉夫逊迭代求解接触半径
-                for (int i = 0; i < 10; i++) {
-                    float a2 = a * a;
-                    float a3 = a2 * a;
-                    float a4 = a2 * a2;
-                    
-                    float f = a4 - 2.0f * R_star_o * overlap_o * a2 
-                             - 4.0f * deme::PI * gamma_surf * R_star_o * R_star_o * a / E_cnt 
-                             + R_star_o * R_star_o * overlap_o * overlap_o;
-                    
-                    float df = 4.0f * a3 - 4.0f * R_star_o * overlap_o * a 
-                              - 4.0f * deme::PI * gamma_surf * R_star_o * R_star_o / E_cnt;
-                    
-                    if (fabsf(df) > DEME_TINY_FLOAT) {
-                        float da = -f / df;
-                        a = a + da;
-                        
-                        // 收敛检查
-                        if (fabsf(da) < 1e-6f * a) break;
-                    }
-                    
-                    // 确保 a 为正值且合理
-                    if (a < 0.1f * a0) a = 0.1f * a0;
-                    if (a > 10.0f * sqrtf(R_star_o * fmaxf(overlap_o, 0.0f))) {
-                        a = 10.0f * sqrtf(R_star_o * fmaxf(overlap_o, 0.0f));
-                    }
+            // ========================================================================
+            // JKR简化模型实现
+            // 根据文档中的方程：F = (4/3)√(R_e)(E*)δ^(3/2) + (4)√(πγE*(a³))n
+            // ========================================================================
+
+            printf("E_cnt: %f, G_cnt: %f, CoR_cnt: %f, mu_cnt: %f, Crr_cnt: %f, gamma_surf: %f\n", 
+                   E_cnt, G_cnt, CoR_cnt, mu_cnt, Crr_cnt, gamma_surf);
+            printf("overlap_o: %f, R_star_o: %f, sqrt_Rd_o(a): %f\n", 
+                   overlap_o, R_star_o, sqrt_Rd_o);
+            
+            // 计算 SJKR-F 法向力
+            // 第一项：Hertz 弹性力
+            // F_H = (4/3)√(R_e)(E*)δ^(3/2)
+            float F_hertz = (4.0f/3.0f) * E_cnt * sqrtf(R_star_o) * powf(overlap_o, 1.5f);
+            // printf("hertz force: %f\n", F_hertz);
+            
+            // 第二项：粘附力（总是存在，即使 gamma_surf = 0）
+            float F_adhesion = 0.0f;
+            if (gamma_surf > 0.0f) {
+                // F_JKR = 4√(πγE*)a³n
+                F_adhesion = 4.0f * sqrtf(deme::PI * gamma_surf * E_cnt * sqrt_Rd_o * sqrt_Rd_o * sqrt_Rd_o) ;
+                printf("jkr force: %f\n", F_adhesion);
+            }
+            
+            // SJKR-F 总法向力 = Hertz力 + JKR粘附力
+            float F_normal_mag = F_hertz + F_adhesion;
+            // printf("normal force: %f\n", F_normal_mag);
+            
+            // 计算切线法向刚度用于阻尼计算
+            // 对于 SJKR-F: k_t_n = |2√(R_e*E*)δ^(1/2) - 3√(πγE*R_e^(3/4))δ^(-1/4)|
+            float k_t_n = 0.0f;
+            if (overlap_o > DEME_TINY_FLOAT) {
+                float term1 = 2.0f * sqrtf(R_star_o * E_cnt) * sqrtf(overlap_o);
+                float term2 = 0.0f;
+                if (gamma_surf > 0.0f) {
+                    term2 = 3.0f * sqrtf(deme::PI * gamma_surf * E_cnt * powf(R_star_o, 0.75f)) * powf(overlap_o, -0.25f);
                 }
-                
-                // JKR 法向力计算
-                float a3 = a * a * a;
-                float sqrt_a3 = sqrtf(a3);
-                
-                // 法向力 = 弹性项 - 粘附项
-                float F_elastic = (4.0f * E_cnt * a3) / (3.0f * R_star_o);
-                float F_adhesion = 4.0f * sqrtf(deme::PI * gamma_surf * E_cnt) * sqrt_a3;
-                float F_normal_mag = F_elastic - F_adhesion;
-                
-                // 添加阻尼（基于接触半径）
-                float gamma_n_o = 0.0f;
-                if (a > DEME_TINY_FLOAT) {
-                    float Sn_jkr = 2.0f * E_cnt * a / sqrtf(R_star_o);
-                    gamma_n_o = deme::TWO_TIMES_SQRT_FIVE_OVER_SIX * beta_o * sqrtf(Sn_jkr * mass_eff_o);
-                }
-                
-                // 总法向力
-                F_normal_o_vec = (F_normal_mag + gamma_n_o * projection_o) * B2A;
-                
-                // 分离条件检查（简化模型：当法向重叠为负时断开接触）
-                if (overlap_o < 0.0f) {
-                    F_normal_o_vec = make_float3(0.0f, 0.0f, 0.0f);
-                    delta_tan_o = make_float3(0.0f, 0.0f, 0.0f);
-                    delta_time_o = 0.0f;
-                }
-                
-            } else {
-                // 无粘附的 Hertzian 模型（原始代码）
-                const float Sn_o = 2.f * E_cnt * sqrt_Rd_o;
-                const float k_n_o = deme::TWO_OVER_THREE * Sn_o;
-                const float gamma_n_o = deme::TWO_TIMES_SQRT_FIVE_OVER_SIX * beta_o * sqrtf(Sn_o * mass_eff_o);
-                F_normal_o_vec = (k_n_o * overlap_o + gamma_n_o * projection_o) * B2A;
+                k_t_n = fabsf(term1 - term2);
+            }
+            
+            // 计算法向阻尼力
+            float gamma_n_o = 0.0f;
+            if (k_t_n > DEME_TINY_FLOAT) {
+                gamma_n_o = deme::TWO_TIMES_SQRT_FIVE_OVER_SIX * beta_o * sqrtf(k_t_n * mass_eff_o);
+            }
+            
+            // 总法向力 = SJKR-F力 + 阻尼力
+            F_normal_o_vec = (F_normal_mag + gamma_n_o * projection_o) * B2A;
+            
+            // SJKR-F 模型的接触分离条件
+            // 根据文档，SJKR-F 在 δ = 0 时激活/失活接触
+            if (overlap_o <= 0.0f) {
+                // 接触断开，清除所有力和历史
+                F_normal_o_vec = make_float3(0.0f, 0.0f, 0.0f);
+                delta_tan_o = make_float3(0.0f, 0.0f, 0.0f);
+                delta_time_o = 0.0f;
             }
         }
 
         // 如果启用，计算滚动阻力
-        if (Crr_cnt > 0.0f) {
+        if (Crr_cnt > 0.0f && length(F_normal_o_vec) > DEME_TINY_FLOAT) {
             bool should_add_rolling_resistance_o = true;
             {
                 const float R_eff_o = R_star_o;
@@ -222,25 +221,48 @@ if (overlap_s > 0) {
                 }
             }
             if (should_add_rolling_resistance_o) {
+                // 计算相对角速度
                 const float3 v_rot_o_global = rotVelCPB_o_local - rotVelCPA_o_local;
                 const float v_rot_o_mag = length(v_rot_o_global);
                 if (v_rot_o_mag > DEME_TINY_FLOAT) {
-                    torque_only_force_o = (v_rot_o_global / v_rot_o_mag) * (Crr_cnt * length(F_normal_o_vec));
+                    // 对于 SJKR-F，滚动阻力矩限制需要考虑拉脱力
+                    // M_r_limit = μ_r * R_e * (F_n + 2*F_po)
+                    // 计算拉脱力F_po = 3πγR_e
+                    float F_po = 3.0f * deme::PI * gamma_surf * R_star_o;
+        
+                    // 有效法向力 = 当前法向力 + 2倍拉脱力
+                    float effective_normal_force = length(F_normal_o_vec) + 2.0f * F_po;
+        
+                    // 滚动阻力 = 滚动系数 × 有效法向力 × 角速度方向
+                    torque_only_force_o = (v_rot_o_global / v_rot_o_mag) * (Crr_cnt * effective_normal_force);
+                    printf("torque force: %f, %f, %f\n", torque_only_force.x, torque_only_force.y, torque_only_force.z);
                 }
             }
         }
 
         // 如果启用摩擦，计算切向力
         if (mu_cnt > 0.0f && length(F_normal_o_vec) > DEME_TINY_FLOAT) {
+            // 切向刚度（基于 Hertz 理论）
             const float kt_o = 8.f * G_cnt * sqrt_Rd_o;
+            // 切向阻尼系数
             const float gt_o = -deme::TWO_TIMES_SQRT_FIVE_OVER_SIX * beta_o * sqrtf(mass_eff_o * kt_o);
+            // 试探切向力 = 弹性力 + 阻尼力
+            // 弹性力 = -kt_o * delta_tan_o
+            // 阻尼力 = -gt_o * vrel_tan_o
             float3 tangent_force_trial_o = -kt_o * delta_tan_o - gt_o * vrel_tan_o;
 
             const float ft_o_mag_trial = length(tangent_force_trial_o);
             if (ft_o_mag_trial > DEME_TINY_FLOAT) {
-                // 使用 JKR 模型的有效法向力
-                const float ft_max_o = length(F_normal_o_vec) * mu_cnt;
-                if (ft_o_mag_trial > ft_max_o) {
+                // 对于 SJKR-F，摩擦力限制需要考虑粘附效应
+                // 根据文档：F_s_max = μ * (F_n + 2*F_po)
+                // 计算拉脱力F_po = 3πγR_e
+                float F_po = 3.0f * deme::PI * gamma_surf * R_star_o;
+                // 有效法向力
+                float effective_normal_force = length(F_normal_o_vec) + 2.0f * F_po;
+                // 最大静摩擦力
+                const float ft_max_o = effective_normal_force * mu_cnt;
+                
+                if (ft_o_mag_trial > ft_max_o) { // 如果试探切向力超过最大摩擦力
                     // 滑动摩擦
                     F_tangential_o_vec = (ft_max_o / ft_o_mag_trial) * tangent_force_trial_o;
                     if (fabs(kt_o) > DEME_TINY_FLOAT) {
@@ -253,8 +275,9 @@ if (overlap_s > 0) {
                     F_tangential_o_vec = tangent_force_trial_o;
                 }
             } else {
-                F_tangential_o_vec = make_float3(0.f, 0.f, 0.f);
+                F_tangential_o_vec = make_float3(0.f, 0.f, 0.f); // 如果试探切向力为零，则切向力也为零
             }
+            printf("tangent force: %f, %f, %f\n", F_tangential_o_vec.x, F_tangential_o_vec.y, F_tangential_o_vec.z);
         }
 
         // ========================================================================

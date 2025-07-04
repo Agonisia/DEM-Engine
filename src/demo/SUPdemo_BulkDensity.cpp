@@ -4,9 +4,7 @@
 //	SPDX-License-Identifier: BSD-3-Clause
 
 // =============================================================================
-// 基于"An expression for the angle of repose of dry
-// cohesive granular materials on Earth and in
-// planetary environments" 设计的休止角实验
+// bulk density demo using SUP contact model
 // =============================================================================
 
 #include <core/ApiVersion.h>
@@ -61,8 +59,8 @@ int main() {
         {"nu", 0.3},        // 泊松比
         {"CoR", 0.5},       // 恢复系数
         {"mu", 0.5},          // 滑动摩擦系数
-        {"Crr", 0.03},      // 滚动摩擦系数
-        {"Cohesion", 0.08}        // 粘聚力
+        {"Crr", 0},      // 滚动摩擦系数
+        {"Cohesion", 0}        // 粘聚力
     });
 
     // 定义颗粒材料
@@ -71,8 +69,8 @@ int main() {
         {"nu", 0.3},        
         {"CoR", 0.5},        
         {"mu", 0.5},
-        {"Crr", 0.03},
-        {"Cohesion", 0.08}
+        {"Crr", 0},
+        {"Cohesion", 0}
     });
 
     auto mat_type_smooth = DEMSim.LoadMaterial({
@@ -88,7 +86,7 @@ int main() {
     DEMSim.SetMaterialPropertyPair("CoR", mat_type_walls, mat_type_particles, 0.5); 
     DEMSim.SetMaterialPropertyPair("mu", mat_type_walls, mat_type_particles, 0.5);
     DEMSim.SetMaterialPropertyPair("Crr", mat_type_walls, mat_type_particles, 0.03);
-    DEMSim.SetMaterialPropertyPair("Cohesion", mat_type_walls, mat_type_particles, 0.08);
+    DEMSim.SetMaterialPropertyPair("Cohesion", mat_type_walls, mat_type_particles, 0);
 
     // 设置材料相互作用属性 - 平滑圆筒
     DEMSim.SetMaterialPropertyPair("CoR", mat_type_smooth, mat_type_particles, 0.1);
@@ -120,16 +118,14 @@ int main() {
     float particle_mass = particle_density * (4.0/3.0) * 3.14159265359 * pow(particle_radius, 3); // 颗粒质量
 
     // 定义仿真域
-    float domain_size = 0.2;       // 100mm × 100mm 水平尺寸
+    float domain_size = 0.035;       // 30mm × 30mm 水平尺寸
     float plate_bottom = 0.f;       // Z坐标：底板位置
-
-
 
     // 设置仿真域大小（50 × 50 × 300）
     DEMSim.InstructBoxDomainDimension(
         {-domain_size/2, domain_size/2},            // X方向：-50mm, 50mm
         {-domain_size/2, domain_size/2},            // Y方向：-50mm, 50mm
-        {(plate_bottom), (plate_bottom + 0.1)}      // Z方向：0, 100mm
+        {(plate_bottom), (plate_bottom + 1)}      // Z方向：0, 100mm
     );
 
     // 设置边界条件 - 顶部开放
@@ -148,14 +144,6 @@ int main() {
     // =========================================================================
     // 4. GEOMETRY CREATION
     // =========================================================================
-
-    // 加载圆筒
-    auto plate = DEMSim.AddWavefrontMeshObject(GetDEMEDataFile("mesh/pusher_d45mm.obj"), mat_type_smooth);
-    plate->Scale(2);
-
-    // 设置为固定底板
-    plate->SetFamily(FAMILY_PUSHER);
-    DEMSim.SetFamilyFixed(FAMILY_PUSHER);
 
     // =========================================================================
     // 5. 粒子生成设置
@@ -209,7 +197,7 @@ int main() {
         }
         
         // 创建并存储团簇模板
-        auto clump_ptr = DEMSim.LoadClumpType(clump_mass, MOI, radii, relPos, mat_type_smooth);
+        auto clump_ptr = DEMSim.LoadClumpType(clump_mass, MOI, radii, relPos, mat_type_particles);
         clump_types.push_back(clump_ptr);
     }
 
@@ -255,8 +243,8 @@ int main() {
 
     // 插入区域参数
     float spacing = particle_diameter * 1.3f;      // 粒子间距
-    float insertion_radius = 0.02;                 // 20mm 半径的插入区域
-    float fixed_insertion_height = 0.00002;          // 每批粒子的起始高度
+    float insertion_radius = 0.015;                 // 13mm 半径的插入区域
+    float fixed_insertion_height = 0.00003;          // 每批粒子的起始高度
     // 设置泊松盘采样器
     PDSampler sampler(spacing);
 
@@ -414,7 +402,7 @@ int main() {
     DEMSim.Initialize();
     
     // Set initial conditions for SUP model
-    DEMSim.SetFamilyContactWildcardValueBoth(2, "scale_factor_l", my_scale_factor);
+    DEMSim.SetFamilyContactWildcardValueBoth(FAMILY_PARTICLES, "scale_factor_l", my_scale_factor);
 
     // =========================================================================
     // 8. OUTPUT SETUP 
@@ -422,8 +410,23 @@ int main() {
     
     // Create output directory
     path out_dir = current_path();
-    out_dir += "/SUP_Repose_Factor_2_part1";
-    create_directory(out_dir);
+    out_dir += "/SUP_BulkDensity_coe000hertz";
+    // create_directory(out_dir);
+
+    // Check if directory exists and clear it, otherwise create it
+    if (exists(out_dir)) {
+        // Directory exists, remove all files inside
+        std::cout << "Output directory exists, clearing contents..." << std::endl;
+        for (const auto& entry : directory_iterator(out_dir)) {
+            remove_all(entry.path());
+        }
+    } else {
+        // Directory doesn't exist, create it
+        create_directory(out_dir);
+        std::cout << "Created output directory: " << out_dir << std::endl;
+    }
+
+
     
     // =========================================================================
     // 9. 仿真执行
@@ -433,14 +436,8 @@ int main() {
     
     int current_batch = 0;
     
-    // 只输出一次mesh文件（在开始时）
-    char meshfile[200];
-    sprintf(meshfile, "%s/SUPdemo_mesh.vtk", out_dir.c_str());
-    DEMSim.WriteMeshFile(std::string(meshfile));
-    std::cout << "Mesh文件已输出: " << meshfile << std::endl;
-    
     // 主仿真循环
-    for (int frame = 0; frame < 30; frame++) {
+    for (int frame = 0; frame < 45; frame++) {
         // 在前90帧分批插入粒子
         if (frame % frames_between_batches == 0 && current_batch < num_batches) {
             std::cout << "\n=== 第 " << frame << " 帧：插入批次 " << current_batch + 1 << " ===" << std::endl;
@@ -480,6 +477,7 @@ int main() {
             
             // 进度报告
             std::cout << "帧: " << frame << " - 输出文件已保存 - 当前系统中粒子数: " << DEMSim.GetNumClumps() << std::endl;
+
         } else {
             // 非输出帧，只报告进度
             std::cout << "帧: " << frame << " - 当前系统中粒子数: " << DEMSim.GetNumClumps() << std::endl;
@@ -490,11 +488,148 @@ int main() {
         DEMSim.ShowThreadCollaborationStats();
     }
 
-
     // =========================================================================
-    // 10. 后处理
+    // 10. 创建检查器 (用于计算体积密度)
+    // =========================================================================    
+    // 首先创建最大Z坐标检查器，获取堆积高度
+    auto max_z_finder = DEMSim.CreateInspector("clump_max_z");
+    
+    // 获取最高点高度
+    float max_z = max_z_finder->GetValue();
+    float pile_height = max_z - plate_bottom;  // 堆积总高度
+    
+    std::cout << "\n堆积高度信息：" << std::endl;
+    std::cout << "  最高点Z坐标: " << max_z * 1000 << " mm" << std::endl;
+    std::cout << "  堆积总高度: " << pile_height * 1000 << " mm" << std::endl;
+    
+    // 定义测量区域边界
+    float measure_x_min = -domain_size/2 * 0.8f;  // 使用80%的区域避免边界效应
+    float measure_x_max = domain_size/2 * 0.8f;
+    float measure_y_min = -domain_size/2 * 0.8f;
+    float measure_y_max = domain_size/2 * 0.8f;
+    
+    // Z方向：从堆积高度的20%到60%
+    float measure_z_min = plate_bottom + pile_height * 0.2f;
+    float measure_z_max = plate_bottom + pile_height * 0.6f;
+    
+    // 创建带条件的检查器 - 只计算测量区域内的粒子
+    char condition[300];
+    sprintf(condition, "return (X >= %f) && (X <= %f) && (Y >= %f) && (Y <= %f) && (Z >= %f) && (Z <= %f);",
+            measure_x_min, measure_x_max, measure_y_min, measure_y_max, measure_z_min, measure_z_max);
+    
+    // 创建质量检查器（注意：我们不使用volume_inspector，因为它可能不工作）
+    auto mass_inspector = DEMSim.CreateInspector("clump_mass", condition);
+    
+    // =========================================================================
+    // 11. 计算体积密度
     // =========================================================================
     
+    std::cout << "\n========== 体积密度计算 ==========" << std::endl;
+    
+    // 获取测量区域内的质量
+    float matter_mass = mass_inspector->GetValue();
+    
+    // 计算测量区域体积
+    float measure_region_volume = (measure_x_max - measure_x_min) * 
+                                 (measure_y_max - measure_y_min) * 
+                                 (measure_z_max - measure_z_min);
+    
+    // 使用质量和密度计算物质体积
+    float matter_volume = matter_mass / particle_density;
+    
+    // 计算体积密度（体积分数）
+    float bulk_density = matter_volume / measure_region_volume;
+    
+    // 计算质量密度
+    float mass_density = matter_mass / measure_region_volume;
+    
+    // 计算空隙率和孔隙度
+    float void_ratio = (measure_region_volume - matter_volume) / matter_volume;
+    float porosity = (measure_region_volume - matter_volume) / measure_region_volume;
+    
+    // 输出详细结果
+    std::cout << "\n测量区域参数：" << std::endl;
+    std::cout << "  X方向: [" << measure_x_min * 1000 << ", " << measure_x_max * 1000 << "] mm" << std::endl;
+    std::cout << "  Y方向: [" << measure_y_min * 1000 << ", " << measure_y_max * 1000 << "] mm" << std::endl;
+    std::cout << "  Z方向: [" << measure_z_min * 1000 << ", " << measure_z_max * 1000 << "] mm" << std::endl;
+    std::cout << "  Z方向范围: 堆积高度的20% ~ 60%" << std::endl;
+    std::cout << "  测量区域体积: " << measure_region_volume * 1e6 << " mm³" << std::endl;
+    
+    std::cout << "\n测量结果：" << std::endl;
+    std::cout << "  物质体积: " << matter_volume * 1e6 << " mm³" << std::endl;
+    std::cout << "  物质质量: " << matter_mass * 1000 << " g" << std::endl;
+    
+    std::cout << "\n密度指标：" << std::endl;
+    std::cout << "  体积密度（体积分数）: " << bulk_density << " (" << bulk_density * 100 << "%)" << std::endl;
+    std::cout << "  质量密度: " << mass_density << " kg/m³" << std::endl;
+    std::cout << "  空隙率: " << void_ratio << std::endl;
+    std::cout << "  孔隙度: " << porosity * 100 << " %" << std::endl;
+    
+    std::cout << "\n验证计算：" << std::endl;
+    std::cout << "  颗粒材料密度: " << particle_density << " kg/m³" << std::endl;
+    std::cout << "  相对密度: " << (mass_density / particle_density) * 100 << " %" << std::endl;
+    
+    // 将结果写入文件（中文）
+    std::ofstream density_file(out_dir / "bulk_density_results.txt");
+    density_file << "体积密度分析结果\n";
+    density_file << "================\n\n";
+    
+    density_file << "仿真参数：\n";
+    density_file << "  颗粒直径: " << particle_diameter * 1000 << " mm\n";
+    density_file << "  颗粒密度: " << particle_density << " kg/m³\n";
+    density_file << "  颗粒总数: " << DEMSim.GetNumClumps() << " 个\n";
+    density_file << "  缩放因子: " << my_scale_factor << "\n\n";
+    
+    density_file << "堆积信息：\n";
+    density_file << "  最高点坐标: " << max_z * 1000 << " mm\n";
+    density_file << "  堆积总高度: " << pile_height * 1000 << " mm\n\n";
+    
+    density_file << "测量区域：\n";
+    density_file << "  X方向: [" << measure_x_min * 1000 << ", " << measure_x_max * 1000 << "] mm\n";
+    density_file << "  Y方向: [" << measure_y_min * 1000 << ", " << measure_y_max * 1000 << "] mm\n";
+    density_file << "  Z方向: [" << measure_z_min * 1000 << ", " << measure_z_max * 1000 << "] mm\n";
+    density_file << "  Z方向说明: 堆积高度的20% ~ 60%区间\n";
+    density_file << "  区域体积: " << measure_region_volume * 1e6 << " mm³\n\n";
+    
+    density_file << "测量值：\n";
+    density_file << "  物质体积: " << matter_volume * 1e6 << " mm³\n";
+    density_file << "  物质质量: " << matter_mass * 1000 << " g\n\n";
+    
+    density_file << "计算结果：\n";
+    density_file << "  体积密度（体积分数）: " << bulk_density << " (" << bulk_density * 100 << "%)\n";
+    density_file << "  质量密度: " << mass_density << " kg/m³\n";
+    density_file << "  空隙率: " << void_ratio << "\n";
+    density_file << "  孔隙度: " << porosity * 100 << " %\n";
+    density_file << "  相对密度: " << (mass_density / particle_density) * 100 << " %\n\n";
+    
+    // 添加结果解释
+    density_file << "结果解释：\n";
+    density_file << "  - 体积密度表示固体颗粒占测量区域的体积比例\n";
+    density_file << "  - 孔隙度表示空隙占测量区域的体积比例\n";
+    density_file << "  - 相对密度表示实际密度与材料密度的比值\n";
+    density_file << "  - 测量区域选择堆积中部(20%-60%)以获得代表性结果\n";
+    
+    density_file.close();
+    
+    std::cout << "\n结果已保存到: " << (out_dir / "bulk_density_results.txt") << std::endl;
+
+    // 额外输出：根据体积密度判断堆积状态
+    std::cout << "\n堆积状态分析：" << std::endl;
+    if (bulk_density < 0.56) {
+        std::cout << "  体积密度 < 0.56，属于非常松散的堆积" << std::endl;
+    } else if (bulk_density < 0.60) {
+        std::cout << "  体积密度在 0.56-0.60 之间，属于随机松散堆积" << std::endl;
+    } else if (bulk_density < 0.64) {
+        std::cout << "  体积密度在 0.60-0.64 之间，属于随机密实堆积" << std::endl;
+    } else {
+        std::cout << "  体积密度 > 0.64，接近密堆积状态" << std::endl;
+    }
+
+    // =========================================================================
+    // 12. 后处理
+    // =========================================================================
+
+
     // 性能统计
     std::chrono::high_resolution_clock::time_point end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> time_sec = std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
