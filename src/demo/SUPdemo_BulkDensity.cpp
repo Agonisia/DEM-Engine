@@ -1,3 +1,4 @@
+//  Copyright (c) 2021, University of Wisconsin -
 //  Copyright (c) 2021, SBEL GPU Development Team
 //  Copyright (c) 2021, University of Wisconsin - Madison
 //
@@ -25,14 +26,52 @@ int main() {
     // 1. 仿真设置
     // =========================================================================
     
-    // 全局参数
-    const float my_scale_factor = 2.0f;                      // SUP缩放因子（2）
+    // === SUP模型核心参数（集中管理） ===
+    const float my_scale_factor = 2.0f;                    // SUP缩放因子
+    const int base_particle_count = 1408000;               // 基准粒子数量（缩放因子为1时）
+    const float base_particle_diameter = 0.0005f;          // 基准粒子直径：0.5mm
+    const float particle_density = 1000.0f;                // 颗粒密度：1000 kg/m³
+    const int num_batches = 8;                             // 分批插入的批次数
+    const int frames_between_batches = 10;                 // 每批次之间的帧数
+    const int frames_total = 25;
+
+    // === 时间参数 ===
+    const float step_size = 5e-7f;                         // 时间步长
+    const float time_per_frame = 5e-3f;                    // 每帧仿真时间
+
+    // === 根据缩放因子自动计算的参数 ===
+    const float particle_diameter = base_particle_diameter * my_scale_factor;
+    const float particle_radius = particle_diameter / 2.0f;
+    const float particle_mass = particle_density * (4.0/3.0) * 3.14159265359 * pow(particle_radius, 3);
+    const int scale_factor_cubed = (int)pow(my_scale_factor, 3);
+    const int actual_particle_count = base_particle_count / scale_factor_cubed;
+    const float total_mass = base_particle_count * particle_density * (4.0/3.0) * 3.14159265359 * pow(base_particle_diameter/2.0f, 3);
+    const int particles_per_batch = actual_particle_count / num_batches;               // 每批次的粒子数
+    const int remaining_particles = actual_particle_count % num_batches;               // 剩余粒子加到最后一批
+    const float batch_interval_time = frames_between_batches * time_per_frame; // 每批次间隔时间
+
+    // === 仿真域参数 ===
+    const float domain_size = 0.030f;                      // 30mm × 30mm 水平尺寸
+    const float plate_bottom = 0.0f;                       // Z坐标：底板位置
+    const float insertion_radius = 0.012f;                 // 插入区域半径 12mm
+    const float fixed_insertion_height = 0.012f;           // 起始高度 12mm
+    const float spacing = particle_diameter * 1.5f;        // 粒子间距
+    
+    // === Family ID定义 ===
     const unsigned int FAMILY_PUSHER = 1;
     const unsigned int FAMILY_PARTICLES = 2;
-    // 定义时间步长
-    const float step_size = 5e-7; 
-    // 定义每帧仿真时间
-    const float time_per_frame = 5e-3;
+    
+    // 输出SUP模型信息
+    std::cout << "\n========== SUP模型参数 ==========" << std::endl;
+    std::cout << "缩放因子: " << my_scale_factor << std::endl;
+    std::cout << "基准粒子数 (l=1): " << base_particle_count << std::endl;
+    std::cout << "实际粒子数: " << actual_particle_count << std::endl;
+    std::cout << "缩放比例: 1:" << scale_factor_cubed << std::endl;
+    std::cout << "粒子直径: " << particle_diameter * 1000 << " mm" << std::endl;
+    std::cout << "单个粒子质量: " << particle_mass * 1000000 << " mg" << std::endl;
+    std::cout << "系统总质量: " << total_mass * 1000 << " g" << std::endl;
+    std::cout << "================================\n" << std::endl;
+    
     // 创建求解器实例
     DEMSolver DEMSim;
     
@@ -49,6 +88,10 @@ int main() {
     // 设置随机种子
     srand(52);
 
+    // 创建输出目录
+    path out_dir = current_path();
+    out_dir += "/SUP_BulkDensity_coe005_factor2";  // 输出目录路径
+
     // =========================================================================
     // 2. 材料属性
     // =========================================================================
@@ -57,8 +100,8 @@ int main() {
     auto mat_type_walls = DEMSim.LoadMaterial({
         {"E", 1e7},         // 杨氏模量
         {"nu", 0.3},        // 泊松比
-        {"CoR", 0.5},       // 恢复系数
-        {"mu", 0.5},          // 滑动摩擦系数
+        {"CoR", 0.1},       // 恢复系数
+        {"mu", 0.3},          // 滑动摩擦系数
         {"Crr", 0},      // 滚动摩擦系数
         {"Cohesion", 0}        // 粘聚力
     });
@@ -67,10 +110,10 @@ int main() {
     auto mat_type_particles = DEMSim.LoadMaterial({
         {"E", 1e7},         
         {"nu", 0.3},        
-        {"CoR", 0.5},        
-        {"mu", 0.5},
+        {"CoR", 0.1},        
+        {"mu", 0.3},
         {"Crr", 0},
-        {"Cohesion", 0}
+        {"Cohesion", 0.05}
     });
 
     auto mat_type_smooth = DEMSim.LoadMaterial({
@@ -88,13 +131,13 @@ int main() {
     DEMSim.SetMaterialPropertyPair("Crr", mat_type_walls, mat_type_particles, 0.03);
     DEMSim.SetMaterialPropertyPair("Cohesion", mat_type_walls, mat_type_particles, 0);
 
-    // 设置材料相互作用属性 - 平滑圆筒
+    // 设置材料相互作用属性 - 光滑面与颗粒
     DEMSim.SetMaterialPropertyPair("CoR", mat_type_smooth, mat_type_particles, 0.1);
     DEMSim.SetMaterialPropertyPair("mu", mat_type_smooth, mat_type_particles, 0.0);
     DEMSim.SetMaterialPropertyPair("Crr", mat_type_smooth, mat_type_particles, 0.0);
     DEMSim.SetMaterialPropertyPair("Cohesion", mat_type_smooth, mat_type_particles, 0.0);
 
-    // 设置材料相互作用属性 - 平滑圆筒与墙壁
+    // 设置材料相互作用属性 - 光滑面与墙壁
     DEMSim.SetMaterialPropertyPair("CoR", mat_type_smooth, mat_type_walls, 0.1);
     DEMSim.SetMaterialPropertyPair("mu", mat_type_smooth, mat_type_walls, 0.0);
     DEMSim.SetMaterialPropertyPair("Crr", mat_type_smooth, mat_type_walls, 0.0);
@@ -111,34 +154,20 @@ int main() {
     // 3. 仿真域设置
     // =========================================================================
 
-    // 颗粒基本参数
-    float particle_diameter = 0.0005f * my_scale_factor;                 // 0.5mm直径
-    float particle_radius = particle_diameter / 2.0f;  // 半径
-    float particle_density = 1000.0;                   // 颗粒密度：1000 kg/m³ （塑料颗粒）
-    float particle_mass = particle_density * (4.0/3.0) * 3.14159265359 * pow(particle_radius, 3); // 颗粒质量
-
-    // 定义仿真域
-    float domain_size = 0.035;       // 30mm × 30mm 水平尺寸
-    float plate_bottom = 0.f;       // Z坐标：底板位置
-
-    // 设置仿真域大小（50 × 50 × 300）
+    // 设置仿真域大小
     DEMSim.InstructBoxDomainDimension(
-        {-domain_size/2, domain_size/2},            // X方向：-50mm, 50mm
-        {-domain_size/2, domain_size/2},            // Y方向：-50mm, 50mm
-        {(plate_bottom), (plate_bottom + 1)}      // Z方向：0, 100mm
+        {-domain_size/2, domain_size/2},            // X方向
+        {-domain_size/2, domain_size/2},            // Y方向
+        {plate_bottom, plate_bottom + 1.0f}         // Z方向：0-1m
     );
 
     // 设置边界条件 - 顶部开放
-    DEMSim.InstructBoxDomainBoundingBC("top_open", mat_type_walls);
+    DEMSim.InstructBoxDomainBoundingBC("top_open", mat_type_smooth);
 
     // 设置物理参数
     DEMSim.SetInitTimeStep(step_size);
     DEMSim.SetGravitationalAcceleration(make_float3(0, 0, -9.81));
-
-    // 设置最大速度（防止数值不稳定）
     DEMSim.SetMaxVelocity(25.0f);
-
-    // 设置错误输出速度（用于处理初始沉降）
     DEMSim.SetErrorOutVelocity(50.0f);
 
     // =========================================================================
@@ -209,12 +238,12 @@ int main() {
         BY_MASS      // 按总质量控制
     };
     
-    // 选择控制模式（修改这里来切换模式）
-    ControlMode control_mode = ControlMode::BY_COUNT;  // 可改为 ControlMode::BY_MASS
+    // 选择控制模式
+    ControlMode control_mode = ControlMode::BY_COUNT;
     
-    // 控制参数
-    int target_particle_count = 32000;      // 目标粒子数量（用于 BY_COUNT 模式）
-    float target_total_mass = 0.001f;       // 目标总质量，单位：kg（用于 BY_MASS 模式）
+    // 控制参数（自动使用SUP计算的值）
+    int target_particle_count = actual_particle_count;
+    float target_total_mass = total_mass;
     
     // 根据控制模式计算最大粒子数
     int max_particles;
@@ -237,27 +266,13 @@ int main() {
             std::cout << "预期粒子数量: " << max_particles << std::endl;
             break;
     }
-    
-    std::cout << "单个粒子质量: " << particle_mass * 1000000 << " mg" << std::endl;
-    std::cout << "单个粒子直径: " << particle_diameter * 1000 << " mm" << std::endl;
 
-    // 插入区域参数
-    float spacing = particle_diameter * 1.3f;      // 粒子间距
-    float insertion_radius = 0.015;                 // 13mm 半径的插入区域
-    float fixed_insertion_height = 0.00003;          // 每批粒子的起始高度
     // 设置泊松盘采样器
     PDSampler sampler(spacing);
 
     // =========================================================================
     // 6. 分批插入粒子准备
     // =========================================================================
-    
-    // 计算每批插入的粒子数（分16批）
-    const int num_batches = 1;
-    const int frames_between_batches = 9;
-    int particles_per_batch = max_particles / num_batches;
-    int remaining_particles = max_particles % num_batches;  // 剩余粒子加到最后一批
-    float batch_interval_time = frames_between_batches * time_per_frame; // 每批次间隔时间
 
     // 存储每批的数据（使用vector的vector代替预分配的DEMClumpBatch）
     std::vector<std::vector<std::shared_ptr<DEMClumpTemplate>>> batch_templates(num_batches);
@@ -277,7 +292,7 @@ int main() {
 
     // v0 = (s - 0.5*g*t²) / t
     float required_initial_velocity = (min_clearance - 0.5f * gravity * batch_interval_time * batch_interval_time) / batch_interval_time;
-    required_initial_velocity = -abs(required_initial_velocity);  // 确保向下
+    required_initial_velocity = -abs(required_initial_velocity + 0.3);  // 确保向下（多加了一点）
 
     std::cout << "计算的初速度: " << required_initial_velocity << " m/s" << std::endl;
     
@@ -326,8 +341,8 @@ int main() {
                 current_total_mass += particle_mass;
             }
             
-            std::cout << "  层 " << batch_layers << " (z=" << current_z/particle_diameter 
-                    << "d): 生成 " << layer_particles << " 个粒子" << std::endl;
+            // std::cout << "  层 " << batch_layers << " (z=" << current_z/particle_diameter 
+            //         << "d): 生成 " << layer_particles << " 个粒子" << std::endl;
             
             batch_layers++;
             current_z += spacing;  // 向上移动到下一层
@@ -335,10 +350,10 @@ int main() {
         
         total_generated += batch_generated;
         
-        std::cout << "批次 " << batch + 1 << " 完成: " << batch_generated 
-                << " 个粒子，共 " << batch_layers << " 层" 
-                << "，高度范围: " << fixed_insertion_height/particle_diameter << "d ~ " 
-                << current_z/particle_diameter << "d" << std::endl;
+        // std::cout << "批次 " << batch + 1 << " 完成: " << batch_generated 
+        //         << " 个粒子，共 " << batch_layers << " 层" 
+        //         << "，高度范围: " << fixed_insertion_height/particle_diameter << "d ~ " 
+        //         << current_z/particle_diameter << "d" << std::endl;
     }
 
     // 将生成的粒子分配到各批次
@@ -366,7 +381,7 @@ int main() {
             
             batch_templates[batch].push_back(all_template_types[particle_index]);
             batch_positions[batch].push_back(all_positions[particle_index]);
-            batch_velocities[batch].push_back(make_float3(0, 0, 0));  // 初始向下速度，先设为0
+            batch_velocities[batch].push_back(make_float3(0, 0, required_initial_velocity));  // 初始向下速度
             batch_families[batch].push_back(FAMILY_PARTICLES);
             
             particle_index++;
@@ -408,11 +423,6 @@ int main() {
     // 8. OUTPUT SETUP 
     // =========================================================================
     
-    // Create output directory
-    path out_dir = current_path();
-    out_dir += "/SUP_BulkDensity_coe000hertz";
-    // create_directory(out_dir);
-
     // Check if directory exists and clear it, otherwise create it
     if (exists(out_dir)) {
         // Directory exists, remove all files inside
@@ -426,8 +436,6 @@ int main() {
         std::cout << "Created output directory: " << out_dir << std::endl;
     }
 
-
-    
     // =========================================================================
     // 9. 仿真执行
     // =========================================================================
@@ -437,9 +445,26 @@ int main() {
     int current_batch = 0;
     
     // 主仿真循环
-    for (int frame = 0; frame < 45; frame++) {
+    for (int frame = 0; frame < frames_total; frame++) {
         // 在前90帧分批插入粒子
         if (frame % frames_between_batches == 0 && current_batch < num_batches) {
+            // 获取当前最高点
+            float current_max_z = 0.0f;
+            if (current_batch > 0) {
+                auto max_z_inspector = DEMSim.CreateInspector("clump_max_z");
+                current_max_z = max_z_inspector->GetValue();
+            }
+            
+            // 动态调整插入高度：在当前最高点上方留出安全距离
+            float safety_margin = 20.0f * particle_diameter;  // 20倍粒径的安全距离
+            float dynamic_insertion_height = std::max(fixed_insertion_height, 
+                                                    current_max_z + safety_margin);
+            
+            // 更新所有粒子的Z坐标
+            for (size_t i = 0; i < batch_positions[current_batch].size(); i++) {
+                float z_offset = dynamic_insertion_height - fixed_insertion_height;
+                batch_positions[current_batch][i].z += z_offset;
+            }
             std::cout << "\n=== 第 " << frame << " 帧：插入批次 " << current_batch + 1 << " ===" << std::endl;
             
             // 获取当前批次的粒子数
@@ -467,12 +492,12 @@ int main() {
         // 每5帧输出一次文件
         if (frame % 1 == 0) {
             // 生成输出文件名
-            char outputfile[200], unifiedfile[200];
+            char unifiedfile[200];
             sprintf(unifiedfile, "%s/SUPdemo_unified_%04d.csv", out_dir.c_str(), frame);                
-            sprintf(outputfile, "%s/SUPdemo_output_%04d.vtk", out_dir.c_str(), frame);
+            // sprintf(outputfile, "%s/SUPdemo_output_%04d.vtk", out_dir.c_str(), frame);
             
             // 写入输出文件
-            DEMSim.WriteSphereAndContactFile(std::string(outputfile));
+            // DEMSim.WriteSphereAndContactFile(std::string(outputfile));
             DEMSim.WriteUnifiedFile(std::string(unifiedfile));
             
             // 进度报告
@@ -486,143 +511,6 @@ int main() {
         // 推进仿真0.005秒
         DEMSim.DoDynamics(time_per_frame); // 每帧推进0.005秒
         DEMSim.ShowThreadCollaborationStats();
-    }
-
-    // =========================================================================
-    // 10. 创建检查器 (用于计算体积密度)
-    // =========================================================================    
-    // 首先创建最大Z坐标检查器，获取堆积高度
-    auto max_z_finder = DEMSim.CreateInspector("clump_max_z");
-    
-    // 获取最高点高度
-    float max_z = max_z_finder->GetValue();
-    float pile_height = max_z - plate_bottom;  // 堆积总高度
-    
-    std::cout << "\n堆积高度信息：" << std::endl;
-    std::cout << "  最高点Z坐标: " << max_z * 1000 << " mm" << std::endl;
-    std::cout << "  堆积总高度: " << pile_height * 1000 << " mm" << std::endl;
-    
-    // 定义测量区域边界
-    float measure_x_min = -domain_size/2 * 0.8f;  // 使用80%的区域避免边界效应
-    float measure_x_max = domain_size/2 * 0.8f;
-    float measure_y_min = -domain_size/2 * 0.8f;
-    float measure_y_max = domain_size/2 * 0.8f;
-    
-    // Z方向：从堆积高度的20%到60%
-    float measure_z_min = plate_bottom + pile_height * 0.2f;
-    float measure_z_max = plate_bottom + pile_height * 0.6f;
-    
-    // 创建带条件的检查器 - 只计算测量区域内的粒子
-    char condition[300];
-    sprintf(condition, "return (X >= %f) && (X <= %f) && (Y >= %f) && (Y <= %f) && (Z >= %f) && (Z <= %f);",
-            measure_x_min, measure_x_max, measure_y_min, measure_y_max, measure_z_min, measure_z_max);
-    
-    // 创建质量检查器（注意：我们不使用volume_inspector，因为它可能不工作）
-    auto mass_inspector = DEMSim.CreateInspector("clump_mass", condition);
-    
-    // =========================================================================
-    // 11. 计算体积密度
-    // =========================================================================
-    
-    std::cout << "\n========== 体积密度计算 ==========" << std::endl;
-    
-    // 获取测量区域内的质量
-    float matter_mass = mass_inspector->GetValue();
-    
-    // 计算测量区域体积
-    float measure_region_volume = (measure_x_max - measure_x_min) * 
-                                 (measure_y_max - measure_y_min) * 
-                                 (measure_z_max - measure_z_min);
-    
-    // 使用质量和密度计算物质体积
-    float matter_volume = matter_mass / particle_density;
-    
-    // 计算体积密度（体积分数）
-    float bulk_density = matter_volume / measure_region_volume;
-    
-    // 计算质量密度
-    float mass_density = matter_mass / measure_region_volume;
-    
-    // 计算空隙率和孔隙度
-    float void_ratio = (measure_region_volume - matter_volume) / matter_volume;
-    float porosity = (measure_region_volume - matter_volume) / measure_region_volume;
-    
-    // 输出详细结果
-    std::cout << "\n测量区域参数：" << std::endl;
-    std::cout << "  X方向: [" << measure_x_min * 1000 << ", " << measure_x_max * 1000 << "] mm" << std::endl;
-    std::cout << "  Y方向: [" << measure_y_min * 1000 << ", " << measure_y_max * 1000 << "] mm" << std::endl;
-    std::cout << "  Z方向: [" << measure_z_min * 1000 << ", " << measure_z_max * 1000 << "] mm" << std::endl;
-    std::cout << "  Z方向范围: 堆积高度的20% ~ 60%" << std::endl;
-    std::cout << "  测量区域体积: " << measure_region_volume * 1e6 << " mm³" << std::endl;
-    
-    std::cout << "\n测量结果：" << std::endl;
-    std::cout << "  物质体积: " << matter_volume * 1e6 << " mm³" << std::endl;
-    std::cout << "  物质质量: " << matter_mass * 1000 << " g" << std::endl;
-    
-    std::cout << "\n密度指标：" << std::endl;
-    std::cout << "  体积密度（体积分数）: " << bulk_density << " (" << bulk_density * 100 << "%)" << std::endl;
-    std::cout << "  质量密度: " << mass_density << " kg/m³" << std::endl;
-    std::cout << "  空隙率: " << void_ratio << std::endl;
-    std::cout << "  孔隙度: " << porosity * 100 << " %" << std::endl;
-    
-    std::cout << "\n验证计算：" << std::endl;
-    std::cout << "  颗粒材料密度: " << particle_density << " kg/m³" << std::endl;
-    std::cout << "  相对密度: " << (mass_density / particle_density) * 100 << " %" << std::endl;
-    
-    // 将结果写入文件（中文）
-    std::ofstream density_file(out_dir / "bulk_density_results.txt");
-    density_file << "体积密度分析结果\n";
-    density_file << "================\n\n";
-    
-    density_file << "仿真参数：\n";
-    density_file << "  颗粒直径: " << particle_diameter * 1000 << " mm\n";
-    density_file << "  颗粒密度: " << particle_density << " kg/m³\n";
-    density_file << "  颗粒总数: " << DEMSim.GetNumClumps() << " 个\n";
-    density_file << "  缩放因子: " << my_scale_factor << "\n\n";
-    
-    density_file << "堆积信息：\n";
-    density_file << "  最高点坐标: " << max_z * 1000 << " mm\n";
-    density_file << "  堆积总高度: " << pile_height * 1000 << " mm\n\n";
-    
-    density_file << "测量区域：\n";
-    density_file << "  X方向: [" << measure_x_min * 1000 << ", " << measure_x_max * 1000 << "] mm\n";
-    density_file << "  Y方向: [" << measure_y_min * 1000 << ", " << measure_y_max * 1000 << "] mm\n";
-    density_file << "  Z方向: [" << measure_z_min * 1000 << ", " << measure_z_max * 1000 << "] mm\n";
-    density_file << "  Z方向说明: 堆积高度的20% ~ 60%区间\n";
-    density_file << "  区域体积: " << measure_region_volume * 1e6 << " mm³\n\n";
-    
-    density_file << "测量值：\n";
-    density_file << "  物质体积: " << matter_volume * 1e6 << " mm³\n";
-    density_file << "  物质质量: " << matter_mass * 1000 << " g\n\n";
-    
-    density_file << "计算结果：\n";
-    density_file << "  体积密度（体积分数）: " << bulk_density << " (" << bulk_density * 100 << "%)\n";
-    density_file << "  质量密度: " << mass_density << " kg/m³\n";
-    density_file << "  空隙率: " << void_ratio << "\n";
-    density_file << "  孔隙度: " << porosity * 100 << " %\n";
-    density_file << "  相对密度: " << (mass_density / particle_density) * 100 << " %\n\n";
-    
-    // 添加结果解释
-    density_file << "结果解释：\n";
-    density_file << "  - 体积密度表示固体颗粒占测量区域的体积比例\n";
-    density_file << "  - 孔隙度表示空隙占测量区域的体积比例\n";
-    density_file << "  - 相对密度表示实际密度与材料密度的比值\n";
-    density_file << "  - 测量区域选择堆积中部(20%-60%)以获得代表性结果\n";
-    
-    density_file.close();
-    
-    std::cout << "\n结果已保存到: " << (out_dir / "bulk_density_results.txt") << std::endl;
-
-    // 额外输出：根据体积密度判断堆积状态
-    std::cout << "\n堆积状态分析：" << std::endl;
-    if (bulk_density < 0.56) {
-        std::cout << "  体积密度 < 0.56，属于非常松散的堆积" << std::endl;
-    } else if (bulk_density < 0.60) {
-        std::cout << "  体积密度在 0.56-0.60 之间，属于随机松散堆积" << std::endl;
-    } else if (bulk_density < 0.64) {
-        std::cout << "  体积密度在 0.60-0.64 之间，属于随机密实堆积" << std::endl;
-    } else {
-        std::cout << "  体积密度 > 0.64，接近密堆积状态" << std::endl;
     }
 
     // =========================================================================
