@@ -28,16 +28,16 @@ int main() {
     
     // === SUP模型核心参数（集中管理） ===
     const float my_scale_factor = 2.0f;                    // SUP缩放因子
-    const int base_particle_count = 1408000;               // 基准粒子数量（缩放因子为1时）
+    const int base_particle_count = 1600000;               // 基准粒子数量（缩放因子为1时）
     const float base_particle_diameter = 0.0005f;          // 基准粒子直径：0.5mm
     const float particle_density = 1000.0f;                // 颗粒密度：1000 kg/m³
-    const int num_batches = 8;                             // 分批插入的批次数
+    const int num_batches = 16;                             // 分批插入的批次数
     const int frames_between_batches = 10;                 // 每批次之间的帧数
     const int frames_total = 25;
 
     // === 时间参数 ===
-    const float step_size = 5e-7f;                         // 时间步长
-    const float time_per_frame = 5e-3f;                    // 每帧仿真时间
+    const float step_size = 1e-6f;                         // 时间步长
+    const float time_per_frame = 1e-2f;                    // 每帧仿真时间
 
     // === 根据缩放因子自动计算的参数 ===
     const float particle_diameter = base_particle_diameter * my_scale_factor;
@@ -51,10 +51,10 @@ int main() {
     const float batch_interval_time = frames_between_batches * time_per_frame; // 每批次间隔时间
 
     // === 仿真域参数 ===
-    const float domain_size = 0.030f;                      // 30mm × 30mm 水平尺寸
+    const float domain_size = 0.040f;                      // 40mm × 40mm 水平尺寸
     const float plate_bottom = 0.0f;                       // Z坐标：底板位置
-    const float insertion_radius = 0.012f;                 // 插入区域半径 12mm
-    const float fixed_insertion_height = 0.012f;           // 起始高度 12mm
+    const float insertion_half_size = 0.018f;              // 插入区域半边长18mm
+    const float fixed_insertion_height = 0.002f;           // 起始高度 2mm
     const float spacing = particle_diameter * 1.5f;        // 粒子间距
     
     // === Family ID定义 ===
@@ -90,7 +90,7 @@ int main() {
 
     // 创建输出目录
     path out_dir = current_path();
-    out_dir += "/SUP_BulkDensity_coe005_factor2";  // 输出目录路径
+    out_dir += "/SUP_BulkDensity_factor2_coe005";  // 输出目录路径
 
     // =========================================================================
     // 2. 材料属性
@@ -287,12 +287,12 @@ int main() {
     // 计算所需的初速度
     // 使用运动学公式：s = v0*t + 0.5*g*t²
     // 我们希望粒子在batch_interval_time内至少下落一定距离
-    float min_clearance = 10.0f * particle_diameter;  // 最小安全距离（5mm）
+    float min_clearance = 5.0f * particle_diameter;  // 最小安全距离（5mm）
     float gravity = 9.81f;
 
     // v0 = (s - 0.5*g*t²) / t
     float required_initial_velocity = (min_clearance - 0.5f * gravity * batch_interval_time * batch_interval_time) / batch_interval_time;
-    required_initial_velocity = -abs(required_initial_velocity + 0.3);  // 确保向下（多加了一点）
+    required_initial_velocity = -abs(0.3f);  // 固定初速度为-0.3m/s
 
     std::cout << "计算的初速度: " << required_initial_velocity << " m/s" << std::endl;
     
@@ -320,9 +320,10 @@ int main() {
         
         while (batch_generated < batch_size) {
             float3 layer_center = make_float3(0, 0, current_z);
+            float3 half_dimensions = make_float3(insertion_half_size, insertion_half_size, 0);
             
-            // 在当前高度的圆形区域内采样
-            auto layer_xyz = sampler.SampleCylinderZ(layer_center, insertion_radius, 0);
+            // 在当前高度的方形区域内采样
+            auto layer_xyz = sampler.SampleBox(layer_center, half_dimensions);
             
             if (layer_xyz.empty()) {
                 std::cout << "  层 " << batch_layers << " 在 z=" << current_z/particle_diameter 
@@ -445,7 +446,7 @@ int main() {
     int current_batch = 0;
     
     // 主仿真循环
-    for (int frame = 0; frame < frames_total; frame++) {
+    for (int frame = 1; frame <= frames_total; frame++) {
         // 在前90帧分批插入粒子
         if (frame % frames_between_batches == 0 && current_batch < num_batches) {
             // 获取当前最高点
@@ -456,7 +457,7 @@ int main() {
             }
             
             // 动态调整插入高度：在当前最高点上方留出安全距离
-            float safety_margin = 20.0f * particle_diameter;  // 20倍粒径的安全距离
+            float safety_margin = 5.0f * particle_diameter;  // 20倍粒径的安全距离
             float dynamic_insertion_height = std::max(fixed_insertion_height, 
                                                     current_max_z + safety_margin);
             
@@ -490,14 +491,20 @@ int main() {
         }
         
         // 每5帧输出一次文件
-        if (frame % 1 == 0) {
+        if (frame % 5 == 0) {
             // 生成输出文件名
             char unifiedfile[200];
-            sprintf(unifiedfile, "%s/SUPdemo_unified_%04d.csv", out_dir.c_str(), frame);                
-            // sprintf(outputfile, "%s/SUPdemo_output_%04d.vtk", out_dir.c_str(), frame);
+            std::string dir_name_str = out_dir.string();
+            size_t pos_coe = dir_name_str.find("_coe");
+            size_t pos_factor = dir_name_str.find("_factor");
+            std::string coe_part = dir_name_str.substr(pos_coe + 4, pos_factor - pos_coe - 4);
+            std::string factor_part = dir_name_str.substr(pos_factor + 7);
+
+            sprintf(unifiedfile, "%s/SUPdemo_f%sc%s_%04d.csv", out_dir.c_str(), 
+                    factor_part.c_str(), coe_part.c_str(), frame);             
+            
             
             // 写入输出文件
-            // DEMSim.WriteSphereAndContactFile(std::string(outputfile));
             DEMSim.WriteUnifiedFile(std::string(unifiedfile));
             
             // 进度报告
@@ -532,6 +539,6 @@ int main() {
     DEMSim.ShowMemStats();
     std::cout << "----------------------------------------" << std::endl;
 
-    std::cout << "SUPdemo_Repose 退出..." << std::endl;
+    std::cout << "SUPdemo_BulkDensity 退出..." << std::endl;
     return 0;
 }

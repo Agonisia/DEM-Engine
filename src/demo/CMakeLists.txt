@@ -43,6 +43,7 @@ SET(DEMOS
 		SUPdemo_Repose
 		SUPdemo_BulkDensity
 		SUPdemo_TestOverlap
+		SUPdemo_BulkCompress
 )
 
 # ------------------------------------------------------------------------------
