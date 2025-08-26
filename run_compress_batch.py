@@ -23,6 +23,7 @@ class CompressionTestRunner:
         # 参数组合
         self.cohesion_values = [0, 0.05, 0.1, 0.2]
         self.scale_factors = [1.0, 2.0, 4.0]  # 可以添加更多缩放因子
+        self.force_indices = [0, 2, 3]  # scale_force_index参数
         
         # 创建备份
         self.backup_file = str(self.source_file) + ".backup"
@@ -54,7 +55,7 @@ class CompressionTestRunner:
         input_path = f"/root/DEM-Engine/results/f{factor_str}c{coe_str}/SUPdemo_f{factor_str}c{coe_str}_0150.csv"
         return input_path
         
-    def modify_cpp_file(self, cohesion, scale_factor):
+    def modify_cpp_file(self, cohesion, scale_factor, force_index=2):
         """修改C++源文件中的参数"""
         
         # 读取文件内容
@@ -65,12 +66,16 @@ class CompressionTestRunner:
         scale_pattern = r'(const float my_scale_factor = )([\d.]+f)'
         content = re.sub(scale_pattern, rf'\g<1>{scale_factor}f', content)
         
-        # 2. 修改输入CSV路径
+        # 2. 修改scale_force_index
+        force_index_pattern = r'(const int scale_force_index = )(\d+)'
+        content = re.sub(force_index_pattern, rf'\g<1>{force_index}', content)
+        
+        # 3. 修改输入CSV路径
         input_csv_path = self.get_input_csv_path(scale_factor, cohesion)
         input_pattern = r'(const std::string input_csv = ")([^"]+)(")'
         content = re.sub(input_pattern, rf'\g<1>{input_csv_path}\g<3>', content)
         
-        # 3. 修改颗粒材料的Cohesion值
+        # 4. 修改颗粒材料的Cohesion值
         lines = content.split('\n')
         in_particle_material = False
         modified_lines = []
@@ -100,10 +105,12 @@ class CompressionTestRunner:
         
         content = '\n'.join(modified_lines)
         
-        # 4. 修改输出目录名称
+        # 5. 修改输出目录名称（包含force_index信息）
         coe_str = self.format_cohesion_string(cohesion)
         factor_str = self.format_scale_string(scale_factor)
-        dir_name = f"CompressionOutput_f{factor_str}c{coe_str}"
+        
+        # 在目录名中包含force_index信息，方便区分
+        dir_name = f"CompressionOutput_f{factor_str}c{coe_str}_fi{force_index}"
         
         # 替换输出目录
         out_dir_pattern = r'(out_dir \+= "/)([^"]+)(")'
@@ -157,16 +164,16 @@ class CompressionTestRunner:
             print(f"提取结果时出错: {str(e)}")
             return None
     
-    def run_single_test(self, cohesion, scale_factor):
+    def run_single_test(self, cohesion, scale_factor, force_index=2):
         """运行单个测试"""
         
         print(f"\n{'='*70}")
-        print(f"运行测试: Cohesion={cohesion}, Scale Factor={scale_factor}")
+        print(f"运行测试: Cohesion={cohesion}, Scale Factor={scale_factor}, Force Index={force_index}")
         print(f"{'='*70}")
         
         try:
             # 修改源文件
-            modified_content, dir_name, input_csv_path = self.modify_cpp_file(cohesion, scale_factor)
+            modified_content, dir_name, input_csv_path = self.modify_cpp_file(cohesion, scale_factor, force_index)
             
             # 检查输入文件
             if not self.check_input_file(input_csv_path):
@@ -182,6 +189,7 @@ class CompressionTestRunner:
             print(f"✓ 已修改源文件")
             print(f"  - Cohesion: {cohesion}")
             print(f"  - Scale Factor: {scale_factor}")
+            print(f"  - Force Index: {force_index}")
             print(f"  - 输入文件: {input_csv_path}")
             print(f"  - 输出目录: {dir_name}")
             
@@ -229,6 +237,7 @@ class CompressionTestRunner:
                 if results:
                     results['cohesion'] = cohesion
                     results['scale_factor'] = scale_factor
+                    results['force_index'] = force_index
                     results['run_time'] = run_time
                     self.results_summary.append(results)
                     
@@ -242,7 +251,7 @@ class CompressionTestRunner:
                         print(f"  - 压缩粒子数: {results['filtered_particles']}")
                 
                 # 复制应力应变曲线
-                self.copy_stress_strain_curve(dir_name, coe_str, factor_str)
+                self.copy_stress_strain_curve(dir_name, coe_str, factor_str, force_index)
                 
                 return True
             else:
@@ -256,7 +265,7 @@ class CompressionTestRunner:
             traceback.print_exc()
             return False
     
-    def copy_stress_strain_curve(self, dir_name, coe_str, factor_str):
+    def copy_stress_strain_curve(self, dir_name, coe_str, factor_str, force_index):
         """复制应力应变曲线到结果文件夹"""
         # 源文件路径
         source_dir = self.build_dir / dir_name
@@ -266,8 +275,10 @@ class CompressionTestRunner:
             print(f"警告：找不到应力应变曲线文件: {source_file}")
             return
         
-        # 创建目标文件夹
-        target_folder = self.project_root / "compression_results" / f"f{factor_str}c{coe_str}"
+        # 创建目标文件夹（包含force_index信息）
+        folder_name = f"f{factor_str}c{coe_str}_fi{force_index}"
+        
+        target_folder = self.project_root / "compression_results" / folder_name
         target_folder.mkdir(parents=True, exist_ok=True)
         
         # 复制文件
@@ -316,7 +327,7 @@ class CompressionTestRunner:
         shutil.copy(self.source_file, self.backup_file)
         
         # 统计信息
-        total_tests = len(self.cohesion_values) * len(self.scale_factors)
+        total_tests = len(self.cohesion_values) * len(self.scale_factors) * len(self.force_indices)
         successful = 0
         failed = 0
         skipped = 0
@@ -324,30 +335,33 @@ class CompressionTestRunner:
         print(f"\n准备运行 {total_tests} 个测试")
         print(f"Cohesion 值: {self.cohesion_values}")
         print(f"Scale Factor 值: {self.scale_factors}")
+        print(f"Force Index 值: {self.force_indices}")
         
         start_time = time.time()
         
         try:
             # 运行所有组合
-            for i, scale in enumerate(self.scale_factors):
-                for j, cohesion in enumerate(self.cohesion_values):
-                    test_num = i * len(self.cohesion_values) + j + 1
-                    print(f"\n[{test_num}/{total_tests}]", end="")
-                    
-                    # 检查输入文件是否存在
-                    input_path = self.get_input_csv_path(scale, cohesion)
-                    if not Path(input_path).exists():
-                        print(f" 跳过 (输入文件不存在): Scale={scale}, Cohesion={cohesion}")
-                        skipped += 1
-                        continue
-                    
-                    if self.run_single_test(cohesion, scale):
-                        successful += 1
-                    else:
-                        failed += 1
-                    
-                    # 从备份恢复，为下一次测试准备
-                    shutil.copy(self.backup_file, self.source_file)
+            test_num = 0
+            for scale in self.scale_factors:
+                for cohesion in self.cohesion_values:
+                    for force_idx in self.force_indices:
+                        test_num += 1
+                        print(f"\n[{test_num}/{total_tests}]", end="")
+                        
+                        # 检查输入文件是否存在
+                        input_path = self.get_input_csv_path(scale, cohesion)
+                        if not Path(input_path).exists():
+                            print(f" 跳过 (输入文件不存在): Scale={scale}, Cohesion={cohesion}, Force Index={force_idx}")
+                            skipped += 1
+                            continue
+                        
+                        if self.run_single_test(cohesion, scale, force_idx):
+                            successful += 1
+                        else:
+                            failed += 1
+                        
+                        # 从备份恢复，为下一次测试准备
+                        shutil.copy(self.backup_file, self.source_file)
         
         finally:
             # 清理：恢复原始文件
@@ -389,6 +403,8 @@ def main():
                         help='自定义Cohesion值列表（默认: 0 0.05 0.1 0.2）')
     parser.add_argument('--scale', nargs='+', type=float,
                         help='自定义Scale Factor值列表（默认: 2.0 4.0）')
+    parser.add_argument('--force-index', nargs='+', type=int,
+                        help='自定义Force Index值列表（默认: 0 2 3）')
     parser.add_argument('--source', type=str,
                         help='源文件路径（相对于项目根目录）')
     parser.add_argument('--executable', type=str,
@@ -411,6 +427,8 @@ def main():
         runner.cohesion_values = args.cohesion
     if args.scale:
         runner.scale_factors = args.scale
+    if args.force_index:
+        runner.force_indices = args.force_index
     
     if args.dry_run:
         print("预览模式 - 将运行以下参数组合：")
@@ -420,15 +438,16 @@ def main():
         
         for scale in runner.scale_factors:
             for cohesion in runner.cohesion_values:
-                coe_str = runner.format_cohesion_string(cohesion)
-                factor_str = runner.format_scale_string(scale)
-                dir_name = f"CompressionOutput_f{factor_str}c{coe_str}"
-                input_csv = runner.get_input_csv_path(scale, cohesion)
-                exists = "✓" if Path(input_csv).exists() else "✗"
-                print(f"  Scale={scale}, Cohesion={cohesion} -> {dir_name}")
-                print(f"    输入文件: {input_csv} [{exists}]")
+                for force_idx in runner.force_indices:
+                    coe_str = runner.format_cohesion_string(cohesion)
+                    factor_str = runner.format_scale_string(scale)
+                    dir_name = f"CompressionOutput_f{factor_str}c{coe_str}_fi{force_idx}"
+                    input_csv = runner.get_input_csv_path(scale, cohesion)
+                    exists = "✓" if Path(input_csv).exists() else "✗"
+                    print(f"  Scale={scale}, Cohesion={cohesion}, Force Index={force_idx} -> {dir_name}")
+                    print(f"    输入文件: {input_csv} [{exists}]")
                 
-        print(f"\n总计: {len(runner.cohesion_values) * len(runner.scale_factors)} 个测试")
+        print(f"\n总计: {len(runner.cohesion_values) * len(runner.scale_factors) * len(runner.force_indices)} 个测试")
     else:
         runner.run_all_tests()
 

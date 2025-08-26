@@ -28,6 +28,7 @@ int main() {
     
     // === SUP模型核心参数（集中管理） ===
     const float my_scale_factor = 2.0f;                    // SUP缩放因子
+    const int scale_force_index = 2;                       // 力的缩放指数
     const int base_particle_count = 1600000;               // 基准粒子数量（缩放因子为1时）
     const float base_particle_diameter = 0.0005f;          // 基准粒子直径：0.5mm
     const float particle_density = 1000.0f;                // 颗粒密度：1000 kg/m³
@@ -147,7 +148,8 @@ int main() {
     auto model_SUP = DEMSim.ReadContactForceModel("ForceModelSUP.cu");
     model_SUP->SetMustHaveMatProp({"E", "nu", "CoR", "mu", "Crr", "Cohesion"});
     model_SUP->SetMustPairwiseMatProp({"CoR", "mu", "Crr", "Cohesion"});
-    model_SUP->SetPerContactWildcards({"delta_time", "delta_tan_x", "delta_tan_y", "delta_tan_z", "scale_factor_l"});
+    model_SUP->SetPerContactWildcards({"delta_time", "delta_tan_x", "delta_tan_y", "delta_tan_z", 
+                                    "scale_factor_l", "scale_force_index"});
 
 
     // =========================================================================
