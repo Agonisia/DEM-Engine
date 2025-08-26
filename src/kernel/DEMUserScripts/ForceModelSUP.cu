@@ -10,12 +10,28 @@
 // VERSION_250630：修改JKR模型为SJKR-F
 // VERSION_250701：修改JKR模型为更简单的计算
 
-// 获取缩放因子 l
-float l = scale_factor_l;
-// 确保 l 有效，如果未正确设置或 <= 0，则默认为 1.0
-if (l < 1e-5f) { // 使用小的 epsilon 值
-    l = 1.0f;
+// 获取缩放因子 index
+int index = scale_factor_index;
+// 获取缩放因子 l_base
+float l_base = scale_factor_l;
+// 确保 l_base 有效，如果未正确设置或 <= 0，则默认为 1.0
+if (l_base < 1e-5f) { // 使用小的 epsilon 值
+    l_base = 1.0f;
 }
+
+// 根据index决定l的实际值：l = l_base^index
+float l = 1.0f;
+if (index == 1) {
+    l = l_base;
+} else if (index == 2) {
+    l = l_base * l_base;  // l²
+} else if (index == 3) {
+    l = l_base * l_base * l_base;  // l³
+} else if (index > 3) {
+    // 使用powf函数计算更高次幂
+    l = powf(l_base, (float)index);
+}
+// index=0或负数时，l保持为1.0（不缩放）
 
 float overlap_s = overlapDepth;
 // 限制重叠量不超过粒子半径的十分之二
@@ -116,12 +132,15 @@ if (overlap_s > 0) {
             const float projection_o = dot(velB2A_o, B2A);
             vrel_tan_o = velB2A_o - projection_o * B2A;
 
-            // 更新切向位移历史（使用 ts 而不是 ts_o）
+            // 修正：使用原始尺度下的时间步
+            float ts_o = ts / l;  // 将当前时间步缩放到原始尺度
+
+            // 更新切向位移历史（使用ts_o而不是ts）
             {
-                delta_tan_o += ts * vrel_tan_o;  // 直接使用 ts（不缩放）
+                delta_tan_o += ts_o * vrel_tan_o;
                 const float disp_proj_o = dot(delta_tan_o, B2A);
                 delta_tan_o -= disp_proj_o * B2A;
-                delta_time_o += ts;  // 直接使用 ts（不缩放）
+                delta_time_o += ts_o;
             }
 
             // 计算有效质量
@@ -254,13 +273,10 @@ if (overlap_s > 0) {
         // SUP 步骤 3：将力缩放回缩放后的系统
         // 根据方程 (23)：F_IS = l²·F_IO
         // ========================================================================
-        float l_sq = l * l;
+        float l_base_sq = l_base * l_base;  // 使用基础缩放因子的平方
         float3 F_total_o_vec = F_normal_o_vec + F_tangential_o_vec + torque_only_force_o;
 
-        // 注意：JKR 模型中的粘附力已经包含在 F_normal_o_vec 中，
-        // 所以不需要额外添加凝聚力项
-
-        force = F_total_o_vec * l_sq;
+        force = F_total_o_vec * l_base_sq;
 
         // 注意：如果需要单独计算扭矩用于旋转计算，
         // 根据方程 (25)：M_IS = l²·M_IO，它们也应该按 l² 缩放
