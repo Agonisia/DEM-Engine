@@ -81,7 +81,7 @@ int main() {
     
     // === SUP模型核心参数（集中管理） ===
     const float my_scale_factor = 4.0f;                    // SUP缩放因子
-    const int scale_force_index = 2;                       // 力的缩放指数
+    const float scale_force_index = 2.0f;                       // 力的缩放指数
     const int base_particle_count = 1600000;               // 基准粒子数量（缩放因子为1时）
     const float base_particle_diameter = 0.0005f;          // 基准粒子直径：0.5mm
     const float particle_density = 1000.0f;                // 颗粒密度：1000 kg/m³
@@ -127,9 +127,9 @@ int main() {
     // 设置输出格式和内容
     DEMSim.SetVerbosity(INFO);
     DEMSim.SetOutputFormat(OUTPUT_FORMAT::CSV);
-    DEMSim.SetOutputContent({"VEL", "ANG_VEL"}); 
+    DEMSim.SetOutputContent({"VEL", "ANG_VEL", "ACC"}); 
     DEMSim.SetContactOutputFormat(OUTPUT_FORMAT::CSV);
-    DEMSim.SetContactOutputContent({"POINT", "FORCE", "TORQUE"});
+    DEMSim.SetContactOutputContent({"CNT_TYPE","POINT", "FORCE", "TORQUE"});
     DEMSim.SetMeshOutputFormat(MESH_FORMAT::VTK);
     
     // 求解器基本配置
@@ -176,8 +176,10 @@ int main() {
     auto model_SUP = DEMSim.ReadContactForceModel("ForceModelSUP.cu");
     model_SUP->SetMustHaveMatProp({"E", "nu", "CoR", "mu", "Crr", "Cohesion"});
     model_SUP->SetMustPairwiseMatProp({"CoR", "mu", "Crr", "Cohesion"});
-    model_SUP->SetPerContactWildcards({"delta_time", "delta_tan_x", "delta_tan_y", "delta_tan_z",
-                                     "scale_factor_l", "scale_force_index"});
+    model_SUP->SetPerContactWildcards({
+        "delta_time", "delta_tan_x", "delta_tan_y", "delta_tan_z",
+        "scale_factor_l", "scale_force_index"
+    });
 
     // =========================================================================
     // 3. 仿真域设置
@@ -196,8 +198,8 @@ int main() {
     // 设置物理参数
     DEMSim.SetInitTimeStep(step_size);
     DEMSim.SetGravitationalAcceleration(make_float3(0, 0, -9.81));
-    DEMSim.SetMaxVelocity(25.0f);
-    DEMSim.SetErrorOutVelocity(50.0f);
+    // DEMSim.SetMaxVelocity(25.0f);
+    // DEMSim.SetErrorOutVelocity(50.0f);
 
     // =========================================================================
     // 4. 读取和过滤粒子数据
@@ -326,10 +328,11 @@ int main() {
         (GET_DATA_PATH() / "mesh/plate40mm.obj").string(), 
         mat_type_plate
     );
-    
+
     // 设置压缩板族（用于控制接触）
     compression_plate->SetFamily(1);
-    
+    compression_plate->SetMass(1e-10);  // 设置压缩板质量为1e-5kg
+
     // 创建跟踪器以监控压缩板状态
     auto plate_tracker = DEMSim.Track(compression_plate);
 
@@ -380,9 +383,10 @@ int main() {
     DEMSim.Initialize();
     
     // 设置SUP模型参数
-    DEMSim.SetFamilyContactWildcardValueBoth(0, "scale_factor_l", my_scale_factor);
-    DEMSim.SetFamilyContactWildcardValueBoth(0, "scale_force_index", scale_force_index);
-    
+
+    DEMSim.SetContactWildcardValue("scale_factor_l", my_scale_factor);
+    DEMSim.SetContactWildcardValue("scale_force_index", scale_force_index);
+
     // 设置压缩板初始位置
     plate_tracker->SetPos(make_float3(0, 0, initial_plate_height));
     
@@ -439,6 +443,8 @@ int main() {
     while (current_time < total_run_time) {
         // 执行一步仿真
         DEMSim.DoDynamics(step_size);
+        DEMSim.SetContactWildcardValue("scale_factor_l", my_scale_factor);
+        DEMSim.SetContactWildcardValue("scale_force_index", scale_force_index);
         
         // 数据记录和输出
         if (curr_step % out_steps == 0) {
@@ -450,6 +456,8 @@ int main() {
             
             // 获取压缩板受力
             float3 plate_force = plate_tracker->ContactAcc() * plate_tracker->Mass();
+            printf("acc: %f, %f, %f\n", 
+                plate_tracker->ContactAcc().x, plate_tracker->ContactAcc().y, plate_tracker->ContactAcc().z);
             float compression_force = abs(plate_force.z);
             
             // 检测接触
@@ -494,8 +502,13 @@ int main() {
             if (frame_count % 10 == 0) {
                 char filename[200];
                 sprintf(filename, "compression_output_%04d.csv", frame_count);
-                DEMSim.WriteUnifiedFile(out_dir / filename);
-                
+                DEMSim.WriteSphereFile(out_dir / filename);
+
+                // 写入接触力文件
+                char contact_filename[200];
+                sprintf(contact_filename, "compression_contact_%04d.csv", frame_count);
+                DEMSim.WriteContactFile(out_dir / contact_filename);
+
                 // 同时输出mesh文件
                 char meshfilename[200];
                 sprintf(meshfilename, "compression_plate_%04d.vtk", frame_count);
@@ -582,7 +595,7 @@ int main() {
     } else {
         std::cout << "警告：未检测到接触！" << std::endl;
     }
-    
+
     // =========================================================================
     // 13. 清理和统计
     // =========================================================================
