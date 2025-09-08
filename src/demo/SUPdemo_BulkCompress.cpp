@@ -153,7 +153,8 @@ int main() {
         {"CoR", 0.1},       // 恢复系数
         {"mu", 0},          // 滑动摩擦系数
         {"Crr", 0},         // 滚动摩擦系数
-        {"Cohesion", 0}     // 粘聚力
+        {"Cohesion", 0},   // 粘聚力
+        {"scale_factor_l", my_scale_factor},
     });
 
     // 定义颗粒材料
@@ -163,23 +164,21 @@ int main() {
         {"CoR", 0.1},        
         {"mu", 0.3},
         {"Crr", 0},
-        {"Cohesion", 0.05}
+        {"Cohesion", 0.05},
+        {"scale_factor_l", my_scale_factor},
     });
     
     // 设置材料相互作用属性 - 板与颗粒
     DEMSim.SetMaterialPropertyPair("CoR", mat_type_plate, mat_type_particles, 0.1); 
     DEMSim.SetMaterialPropertyPair("mu", mat_type_plate, mat_type_particles, 0.0);
     DEMSim.SetMaterialPropertyPair("Crr", mat_type_plate, mat_type_particles, 0.0);
-    DEMSim.SetMaterialPropertyPair("Cohesion", mat_type_plate, mat_type_particles, 0.0);
+    DEMSim.SetMaterialPropertyPair("Cohesion", mat_type_plate, mat_type_particles, 0.0); 
 
     // 加载SUP接触力模型
     auto model_SUP = DEMSim.ReadContactForceModel("ForceModelSUP.cu");
-    model_SUP->SetMustHaveMatProp({"E", "nu", "CoR", "mu", "Crr", "Cohesion"});
+    model_SUP->SetMustHaveMatProp({"E", "nu", "CoR", "mu", "Crr", "Cohesion", "scale_factor_l"});
     model_SUP->SetMustPairwiseMatProp({"CoR", "mu", "Crr", "Cohesion"});
-    model_SUP->SetPerContactWildcards({
-        "delta_time", "delta_tan_x", "delta_tan_y", "delta_tan_z",
-        "scale_factor_l", "scale_force_index"
-    });
+    model_SUP->SetPerContactWildcards({"delta_time", "delta_tan_x", "delta_tan_y", "delta_tan_z","scale_force_index"});
 
     // =========================================================================
     // 3. 仿真域设置
@@ -384,7 +383,7 @@ int main() {
     
     // 设置SUP模型参数
 
-    DEMSim.SetContactWildcardValue("scale_factor_l", my_scale_factor);
+    // DEMSim.SetContactWildcardValue("scale_factor_l", my_scale_factor);
     DEMSim.SetContactWildcardValue("scale_force_index", scale_force_index);
 
     // 设置压缩板初始位置
@@ -443,7 +442,7 @@ int main() {
     while (current_time < total_run_time) {
         // 执行一步仿真
         DEMSim.DoDynamics(step_size);
-        DEMSim.SetContactWildcardValue("scale_factor_l", my_scale_factor);
+        // DEMSim.SetContactWildcardValue("scale_factor_l", my_scale_factor);
         DEMSim.SetContactWildcardValue("scale_force_index", scale_force_index);
         
         // 数据记录和输出

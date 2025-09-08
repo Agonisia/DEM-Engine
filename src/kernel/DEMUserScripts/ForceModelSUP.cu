@@ -9,13 +9,8 @@
 // VERSION_250826: 修改了滚动阻力和切向力的计算公式
 
 // 获取缩放因子
-float index = scale_force_index; // 力的缩放指数，通常为2
-float l = scale_factor_l; // 长度缩放因子
-
-// printf("Input scale_factor_l = %f\n", scale_factor_l);
-// // printf("Inside factor_l = %f\n", l);
-// printf("Input scale_force_index = %f\n", scale_force_index);
-// // printf("Inside force_index = %d\n", index);
+float l = scale_factor_l[bodyAMatType]; // SUP缩放因子
+float index = 2; // 力的缩放指数，通常为2
 
 if (l < 1e-5f) {
     l = 1.0f;
@@ -220,7 +215,8 @@ if (overlap_s > 0) {
         // ========================================================================
         // SUP 步骤 3：将力缩放回缩放后的系统
         // ========================================================================
-        float l_force = powf(l, (float)index);  // 通常 index = 2
+        
+        float l_force = powf(l, (float)index);
         float3 F_total_o_vec = F_normal_o_vec + F_tangential_o_vec + torque_only_force_o;
         
         force = F_total_o_vec * l_force;

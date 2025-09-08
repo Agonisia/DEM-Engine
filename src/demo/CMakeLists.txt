@@ -44,6 +44,7 @@ SET(DEMOS
 		SUPdemo_BulkDensity
 		SUPdemo_TestOverlap
 		SUPdemo_BulkCompress
+		SUPdemo_Mixer_Part1
 )
 
 # ------------------------------------------------------------------------------
