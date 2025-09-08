@@ -30,6 +30,7 @@ int main() {
     const float scale_force_index = 2.0f;                  // 力的缩放指数
     const int base_particle_count = 1600000;               // 基准粒子数量（缩放因子为1时）
     const float base_particle_diameter = 0.0005f;          // 基准粒子直径：0.5mm
+    const float base_particle_weight = 0.0458f;            // 基准粒子重量：0.0458kg
     const float particle_density = 1000.0f;                // 颗粒密度：1000 kg/m³
     const float particle_cohesion = 0.0f;               // 颗粒间粘聚力
 
