@@ -10,7 +10,7 @@
 cmake_minimum_required(VERSION 3.18)
 
 # Personal Configuration
-set(CMAKE_CUDA_ARCHITECTURES 89 86 75 70)
+set(CMAKE_CUDA_ARCHITECTURES 89 86)
 set(CMAKE_CUDA_COMPILER "/usr/local/cuda/bin/nvcc")
 
 # Version information
@@ -292,13 +292,13 @@ install(DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/data/ DESTINATION ${CMAKE_INSTALL_DA
 # ---------------------------------------------------------------------------- #
 # Copy kernels and force models over
 # ---------------------------------------------------------------------------- #
-# 复制整个kernel目录
+# Copy the entire kernel directory (including all kernel files)
 file(COPY ${CMAKE_CURRENT_LIST_DIR}/src/kernel/ DESTINATION ${CMAKE_BINARY_DIR}/kernel/)
 
-# 复制整个DEM目录（包含所有力模型文件）
+# Copy the entire DEM directory (including all force model files)
 file(COPY ${CMAKE_CURRENT_LIST_DIR}/src/DEM/ DESTINATION ${CMAKE_BINARY_DIR}/DEM/)
 
-# 为了确保在源文件更新时自动复制，创建自定义目标
+# Create a custom target to update these files when source files change
 add_custom_target(copy_runtime_files ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory 
             ${CMAKE_CURRENT_LIST_DIR}/src/kernel 
@@ -309,10 +309,10 @@ add_custom_target(copy_runtime_files ALL
     COMMENT "Updating kernel and force model files..."
 )
 
-# 让主库依赖于这个复制目标
+# Add dependencies to ensure the custom target is executed before the main target
 add_dependencies(simulator_multi_gpu copy_runtime_files)
 
-# 安装时也要包含所有文件
+# Make sure these files are also installed
 install(DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/src/kernel/ DESTINATION ${CMAKE_INSTALL_DATADIR}/DEME/kernel/)
 install(DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/src/DEM/ DESTINATION ${CMAKE_INSTALL_DATADIR}/DEME/DEM/)
 

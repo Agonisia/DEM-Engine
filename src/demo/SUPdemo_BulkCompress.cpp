@@ -74,14 +74,30 @@ std::vector<float3> ReadParticlePositions(const std::string& filename) {
     return positions;
 }
 
+// === 辅助函数：格式化参数 ===
+std::string formatCohesion(float cohesion) {
+    char buffer[4];
+    sprintf(buffer, "%03d", (int)(cohesion * 100));
+    return std::string(buffer);
+}
+
+std::string generateOutputDirName(float scale, float cohesion, int force_idx) {
+    std::ostringstream ss;
+    ss << "CompressionOutput_f" << (int)scale 
+    << "c" << formatCohesion(cohesion)
+    << "_fi" << force_idx;
+    return ss.str();
+}
+
 int main() {
     // =========================================================================
     // 1. 仿真设置
     // =========================================================================
     
     // === SUP模型核心参数（集中管理） ===
-    const float my_scale_factor = 4.0f;                    // SUP缩放因子
-    const float scale_force_index = 2.0f;                       // 力的缩放指数
+    const float my_scale_factor = 2.0f;                    // SUP缩放因子
+    const int scale_force_index = 3;                       // 力的缩放指数
+    const float cohesion_value = 0.20f;                     // 粘附力
     const int base_particle_count = 1600000;               // 基准粒子数量（缩放因子为1时）
     const float base_particle_diameter = 0.0005f;          // 基准粒子直径：0.5mm
     const float particle_density = 1000.0f;                // 颗粒密度：1000 kg/m³
@@ -98,17 +114,17 @@ int main() {
     const float filter_height = 0.1f;                      // 过滤高度：0.1m
     const float target_mass_g = 100.368f;                  // 目标质量：100.368g（根据因子1的运行结果设置）
     const float plate_gap = 0.0005f;                       // 压缩板与粒子初始间隙：0.5mm
-    const float target_height = 0.09f;                     // 目标压缩高度：0.09m
-    const float compression_velocity = 0.01f;              // 压缩速度：0.01 m/s
+    const float target_height = 0.095f;                     // 目标压缩高度：0.095m
+    const float compression_velocity = 0.02f;              // 压缩速度：0.01 m/s
     const float plate_size = 0.040f;                       // 压缩板尺寸：40mm × 40mm
     const float plate_area = plate_size * plate_size;      // 压缩板面积
-
+    
     // === 时间参数 ===
-    const float step_size = 1e-6f;                         // 时间步长
+    const float step_size = 5e-7f;                         // 时间步长
     const float output_interval = 0.01f;                   // 输出间隔：0.01秒
     
     // === 输入文件路径 ===
-    const std::string input_csv = "/home/peize/research/DEME_data/250722/results/f4c005/SUPdemo_f4c005_0150.csv";
+    const std::string input_csv = "/root/DEM-Engine/results/f1c000/SUPdemo_f1c000_0150.csv";
 
     // 输出SUP模型信息
     std::cout << "\n========== SUP模型参数 ==========" << std::endl;
@@ -127,19 +143,17 @@ int main() {
     // 设置输出格式和内容
     DEMSim.SetVerbosity(INFO);
     DEMSim.SetOutputFormat(OUTPUT_FORMAT::CSV);
-    DEMSim.SetOutputContent({"VEL", "ANG_VEL", "ACC"}); 
+    DEMSim.SetOutputContent({"VEL", "ANG_VEL"}); 
     DEMSim.SetContactOutputFormat(OUTPUT_FORMAT::CSV);
-    DEMSim.SetContactOutputContent({"CNT_TYPE","POINT", "FORCE", "TORQUE"});
+    DEMSim.SetContactOutputContent({"POINT", "FORCE", "TORQUE"});
     DEMSim.SetMeshOutputFormat(MESH_FORMAT::VTK);
     
     // 求解器基本配置
     DEMSim.SetErrorOutAvgContacts(1000);
 
-    // 创建输出目录（根据缩放因子命名）
+    // 使用辅助函数：
     path out_dir = current_path();
-    std::ostringstream dir_name;
-    dir_name << "/CompressionOutput_f" << my_scale_factor << "c005";
-    out_dir += dir_name.str();
+    out_dir /= generateOutputDirName(my_scale_factor, cohesion_value, scale_force_index);
     create_directory(out_dir);
 
     // =========================================================================
@@ -151,10 +165,10 @@ int main() {
         {"E", 1e7},         // 杨氏模量
         {"nu", 0.3},        // 泊松比
         {"CoR", 0.1},       // 恢复系数
-        {"mu", 0},          // 滑动摩擦系数
+        {"mu", 0.3},          // 滑动摩擦系数
         {"Crr", 0},         // 滚动摩擦系数
-        {"Cohesion", 0},   // 粘聚力
-        {"scale_factor_l", my_scale_factor},
+        {"Cohesion", 0},    // 粘聚力
+        {"scale_factor_l", my_scale_factor}
     });
 
     // 定义颗粒材料
@@ -164,27 +178,28 @@ int main() {
         {"CoR", 0.1},        
         {"mu", 0.3},
         {"Crr", 0},
-        {"Cohesion", 0.05},
-        {"scale_factor_l", my_scale_factor},
+        {"Cohesion", cohesion_value},
+        {"scale_factor_l", my_scale_factor}
     });
     
     // 设置材料相互作用属性 - 板与颗粒
     DEMSim.SetMaterialPropertyPair("CoR", mat_type_plate, mat_type_particles, 0.1); 
     DEMSim.SetMaterialPropertyPair("mu", mat_type_plate, mat_type_particles, 0.0);
     DEMSim.SetMaterialPropertyPair("Crr", mat_type_plate, mat_type_particles, 0.0);
-    DEMSim.SetMaterialPropertyPair("Cohesion", mat_type_plate, mat_type_particles, 0.0); 
+    DEMSim.SetMaterialPropertyPair("Cohesion", mat_type_plate, mat_type_particles, 0.0);
 
     // 加载SUP接触力模型
     auto model_SUP = DEMSim.ReadContactForceModel("ForceModelSUP.cu");
     model_SUP->SetMustHaveMatProp({"E", "nu", "CoR", "mu", "Crr", "Cohesion", "scale_factor_l"});
     model_SUP->SetMustPairwiseMatProp({"CoR", "mu", "Crr", "Cohesion"});
-    model_SUP->SetPerContactWildcards({"delta_time", "delta_tan_x", "delta_tan_y", "delta_tan_z","scale_force_index"});
+    model_SUP->SetPerContactWildcards({"delta_time", "delta_tan_x", "delta_tan_y", "delta_tan_z"});
 
     // =========================================================================
     // 3. 仿真域设置
     // =========================================================================
 
     // 设置仿真域大小
+    const float bottom_z = 0.0f;
     DEMSim.InstructBoxDomainDimension(
         {-plate_size/2, plate_size/2},          // X方向
         {-plate_size/2, plate_size/2},          // Y方向
@@ -192,13 +207,14 @@ int main() {
     );
 
     // 设置边界条件
-    DEMSim.InstructBoxDomainBoundingBC("top_open", mat_type_plate);
+    DEMSim.InstructBoxDomainBoundingBC("top_open", mat_type_particles);
+    DEMSim.AddBCPlane(make_float3(0, 0, bottom_z), make_float3(0, 0, 1), mat_type_plate);
 
     // 设置物理参数
     DEMSim.SetInitTimeStep(step_size);
     DEMSim.SetGravitationalAcceleration(make_float3(0, 0, -9.81));
     // DEMSim.SetMaxVelocity(25.0f);
-    // DEMSim.SetErrorOutVelocity(50.0f);
+    DEMSim.SetErrorOutVelocity(10000.0f);
 
     // =========================================================================
     // 4. 读取和过滤粒子数据
@@ -299,6 +315,7 @@ int main() {
     std::cout << "过滤后最低点: " << min_z_after_filter << " m" << std::endl;
     std::cout << "================" << std::endl;
 
+
     // =========================================================================
     // 5. 加载粒子到系统
     // =========================================================================
@@ -319,21 +336,36 @@ int main() {
     std::cout << "成功加载 " << retained_particles << " 个粒子到系统" << std::endl;
 
     // =========================================================================
-    // 6. 创建压缩板（使用mesh）
+    // 6. 创建压缩板（使用mesh作为可视化，但实际用BC plane）
     // =========================================================================
 
-    // 加载压缩板mesh
-    auto compression_plate = DEMSim.AddWavefrontMeshObject(
-        (GET_DATA_PATH() / "mesh/plate40mm.obj").string(), 
-        mat_type_plate
-    );
+    // 从过滤后的粒子位置直接计算最高点
+    float initial_particle_height = max_z_after_filter;
+    
+    std::cout << "\n=== 初始状态 ===" << std::endl;
+    std::cout << "粒子最高点（从数据计算）: " << initial_particle_height << " m" << std::endl;
+    
+    // 计算压缩板初始位置
+    float initial_plate_height = initial_particle_height + plate_gap;
+    
+    std::cout << "压缩板初始位置: " << initial_plate_height << " m" << std::endl;
+    std::cout << "初始间隙: " << plate_gap * 1000 << " mm" << std::endl;
+    
+    // 加载压缩板BC
+    auto compression_plate = DEMSim.AddBCPlane(  
+        make_float3(0, 0, initial_plate_height),  // 平面位置  
+        make_float3(0, 0, -1),                    // 平面法向量（向下）  
+        mat_type_plate                            // 材料  
+    );  
+
+    // compression_plate->Scale(make_float3(1.1f, 1.1f, 1.0f));  
 
     // 设置压缩板族（用于控制接触）
     compression_plate->SetFamily(1);
     compression_plate->SetMass(1e-10);  // 设置压缩板质量为1e-5kg
 
     // 创建跟踪器以监控压缩板状态
-    auto plate_tracker = DEMSim.Track(compression_plate);
+    auto plate_tracker = DEMSim.Track(compression_plate); 
 
     // =========================================================================
     // 7. 创建检查器
@@ -352,18 +384,6 @@ int main() {
     // =========================================================================
     // 8. 计算初始粒子高度（在初始化前）
     // =========================================================================
-    
-    // 从过滤后的粒子位置直接计算最高点
-    float initial_particle_height = max_z_after_filter;
-    
-    std::cout << "\n=== 初始状态 ===" << std::endl;
-    std::cout << "粒子最高点（从数据计算）: " << initial_particle_height << " m" << std::endl;
-    
-    // 计算压缩板初始位置
-    float initial_plate_height = initial_particle_height + plate_gap;
-    
-    std::cout << "压缩板初始位置: " << initial_plate_height << " m" << std::endl;
-    std::cout << "初始间隙: " << plate_gap * 1000 << " mm" << std::endl;
     
     // 计算压缩时间
     float compression_time = (initial_plate_height - target_height) / compression_velocity;
@@ -384,7 +404,7 @@ int main() {
     // 设置SUP模型参数
 
     // DEMSim.SetContactWildcardValue("scale_factor_l", my_scale_factor);
-    DEMSim.SetContactWildcardValue("scale_force_index", scale_force_index);
+    // DEMSim.SetContactWildcardValue("scale_force_index", scale_force_index);
 
     // 设置压缩板初始位置
     plate_tracker->SetPos(make_float3(0, 0, initial_plate_height));
@@ -443,7 +463,7 @@ int main() {
         // 执行一步仿真
         DEMSim.DoDynamics(step_size);
         // DEMSim.SetContactWildcardValue("scale_factor_l", my_scale_factor);
-        DEMSim.SetContactWildcardValue("scale_force_index", scale_force_index);
+        // DEMSim.SetContactWildcardValue("scale_force_index", scale_force_index);
         
         // 数据记录和输出
         if (curr_step % out_steps == 0) {
@@ -455,8 +475,8 @@ int main() {
             
             // 获取压缩板受力
             float3 plate_force = plate_tracker->ContactAcc() * plate_tracker->Mass();
-            printf("acc: %f, %f, %f\n", 
-                plate_tracker->ContactAcc().x, plate_tracker->ContactAcc().y, plate_tracker->ContactAcc().z);
+            // printf("acc: %f, %f, %f\n", 
+            //     plate_tracker->ContactAcc().x, plate_tracker->ContactAcc().y, plate_tracker->ContactAcc().z);
             float compression_force = abs(plate_force.z);
             
             // 检测接触
@@ -478,7 +498,7 @@ int main() {
                 strain = (contact_height - plate_pos.z) / initial_particle_height;
             }
             
-            // 只在接触后记录应力应变数据
+            // // 只在接触后记录应力应变数据
             if (contact_started) {
                 // 记录数据
                 time_data.push_back(current_time - contact_time);  // 相对于接触时刻的时间
@@ -498,7 +518,7 @@ int main() {
             }
             
             // 输出仿真文件
-            if (frame_count % 10 == 0) {
+            if (frame_count % 5 == 0) {
                 char filename[200];
                 sprintf(filename, "compression_output_%04d.csv", frame_count);
                 DEMSim.WriteSphereFile(out_dir / filename);

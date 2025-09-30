@@ -26,22 +26,22 @@ int main() {
     // =========================================================================
     
     // === SUP模型核心参数（集中管理） ===
-    const float my_scale_factor = 4.0f;                    // SUP缩放因子
+    const float my_scale_factor = 1.0f;                    // SUP缩放因子
     const float scale_force_index = 2.0f;                  // 力的缩放指数
-    const int base_particle_count = 1600000;               // 基准粒子数量（缩放因子为1时）
+    const int base_particle_count = 1600000;               // 基准粒子数量设定（缩放因子为1时）
+    const float base_particle_mass = 0.0458f;              // 基准粒子质量设定：0.0458kg
     const float base_particle_diameter = 0.0005f;          // 基准粒子直径：0.5mm
-    const float base_particle_weight = 0.0458f;            // 基准粒子重量：0.0458kg
     const float particle_density = 1000.0f;                // 颗粒密度：1000 kg/m³
-    const float particle_cohesion = 0.0f;               // 颗粒间粘聚力
+    const float particle_cohesion = 0.0f;                  // 颗粒间粘聚力
 
     // === 时间参数 ===
     const float step_size = 1e-6f;                         // 时间步长
     const float time_per_frame = 1e-2f;                    // 每帧仿真时间
 
     // === 分批插入参数 ===
-    const int num_batches = 16;                             // 分批插入的批次数
+    const int num_batches = 16;                            // 分批插入的批次数
     const int frames_between_batches = 5;                  // 每批次之间的帧数
-    const int frames_after_insertion = 50;                // 插入完成后继续运行的帧数
+    const int frames_after_insertion = 50;                 // 插入完成后继续运行的帧数
     
     // === 根据缩放因子自动计算的参数 ===
     const float particle_diameter = base_particle_diameter * my_scale_factor;
@@ -57,8 +57,8 @@ int main() {
     const float batch_interval_time = frames_between_batches * time_per_frame;
 
     // === 仿真域参数 ===
-    const float domain_size = 0.1f;                      // 100mm × 100mm 水平尺寸
-    const float wall_radius = 0.04f;                      // 圆柱墙体半径40mm
+    const float domain_size = 0.1f;                        // 100mm × 100mm 水平尺寸
+    const float wall_radius = 0.042f;                      // 圆柱墙体半径42mm
     const float plate_bottom = 0.0f;                       // Z坐标：底板位置
     const float insertion_radius = 0.038f;                 // 插入区域半径38mm
     const float insertion_height = 0.042f;                 // 起始高度 42mm
@@ -93,7 +93,7 @@ int main() {
     // 2. 材料属性设置
     // =========================================================================
     
-    // 定义慢搅拌器材料
+    // 定义搅拌器材料
     auto mat_type_mixer = DEMSim.LoadMaterial({
         {"E", 1e7},         // 杨氏模量
         {"nu", 0.3},        // 泊松比
@@ -115,7 +115,7 @@ int main() {
         {"scale_factor_l", my_scale_factor}
     });
     
-    // 设置材料相互作用属性 - 慢搅拌器与颗粒
+    // 设置材料相互作用属性 - 搅拌器与颗粒
     DEMSim.SetMaterialPropertyPair("mu", mat_type_mixer, mat_type_particles, 0.1);
     DEMSim.SetMaterialPropertyPair("CoR", mat_type_mixer, mat_type_particles, 0.0);
     DEMSim.SetMaterialPropertyPair("Crr", mat_type_mixer, mat_type_particles, 0.0);
@@ -151,7 +151,7 @@ int main() {
 
     // 接触检测和性能设置
     DEMSim.SetCDUpdateFreq(40);
-    DEMSim.SetExpandSafetyAdder(2.0);  // 考虑慢搅拌器叶片的高速运动
+    DEMSim.SetExpandSafetyAdder(2.0);  // 考虑搅拌器叶片的高速运动
     
     // 高级接触检测设置
     DEMSim.SetCDNumStepsMaxDriftMultipleOfAvg(1.2);
@@ -171,7 +171,7 @@ int main() {
     walls->AddCylinder(make_float3(0), make_float3(0, 0, 1), 
                       wall_radius, mat_type_mixer, 0);
     
-    // === 4.2 添加可动几何体 - 慢搅拌器网格 ===
+    // === 4.2 添加可动几何体 - 搅拌器网格 ===
     auto mixer = DEMSim.AddWavefrontMeshObject(
         (GET_DATA_PATH() / "mesh/impeller.obj").string(), 
         mat_type_mixer
@@ -181,14 +181,14 @@ int main() {
     // 设置搅拌器的预定义角速度（绕z轴旋转，初始不旋转）
     DEMSim.SetFamilyPrescribedAngVel(FAMILY_MIXER, "0", "0", "0");
 
-     // =========================================================================
-    // 5. 粒子生成设置
+    // =========================================================================
+    // 5. 粒子生成设置（增加双重控制模式）
     // =========================================================================
 
     // --- 5.1 粒子/团簇模板 ---
-
+    
     // 模板生成参数
-    int num_template = 6;                              // 随机团簇模板总数
+    int num_template = 1;                              // 随机团簇模板总数
     int min_sphere = 1;                                // 每个团簇最少球数
     int max_sphere = 1;                                // 每个团簇最多球数
     float min_rad = particle_radius;
@@ -245,12 +245,12 @@ int main() {
         BY_MASS      // 按总质量控制
     };
     
-    // 选择控制模式
-    ControlMode control_mode = ControlMode::BY_COUNT;
+    // 选择控制模式（可以根据需要修改）
+    ControlMode control_mode = ControlMode::BY_MASS;
     
     // 控制参数（自动使用SUP计算的值）
     int target_particle_count = actual_particle_count;
-    float target_total_mass = total_mass;
+    float target_total_mass = base_particle_mass;
     
     // 根据控制模式计算最大粒子数
     int max_particles;
@@ -262,14 +262,14 @@ int main() {
             expected_total_mass = target_particle_count * particle_mass;
             std::cout << "\n=== 使用粒子数量控制模式 ===" << std::endl;
             std::cout << "目标粒子数量: " << target_particle_count << std::endl;
-            std::cout << "预期总质量: " << expected_total_mass * 1000 << " g" << std::endl;
+            std::cout << "预期总质量: " << expected_total_mass << " kg" << std::endl;
             break;
             
         case ControlMode::BY_MASS:
             max_particles = (int)(target_total_mass / particle_mass);
             expected_total_mass = target_total_mass;
             std::cout << "\n=== 使用总质量控制模式 ===" << std::endl;
-            std::cout << "目标总质量: " << target_total_mass * 1000 << " g" << std::endl;
+            std::cout << "目标总质量: " << target_total_mass << " kg" << std::endl;
             std::cout << "预期粒子数量: " << max_particles << std::endl;
             break;
     }
@@ -292,12 +292,8 @@ int main() {
     std::vector<float3> all_positions;
 
     // 计算所需的初速度
-    // 使用运动学公式：s = v0*t + 0.5*g*t²
-    // 我们希望粒子在batch_interval_time内至少下落一定距离
-    float min_clearance = 5.0f * particle_diameter;  // 最小安全距离（5mm）
+    float min_clearance = 5.0f * particle_diameter;  // 最小安全距离（5倍粒径）
     float gravity = 9.81f;
-
-    // v0 = (s - 0.5*g*t²) / t
     float required_initial_velocity = (min_clearance - 0.5f * gravity * batch_interval_time * batch_interval_time) / batch_interval_time;
     required_initial_velocity = -abs(0.2f);  // 固定初速度为-0.2m/s
 
@@ -307,9 +303,9 @@ int main() {
     int total_generated = 0;
     float current_total_mass = 0.0f;
     int layer_count = 0;
+    int actual_batches_used = 0;  // 添加实际使用的批次数变量
 
     // ========== 固定起始高度分批生成 ==========
-
 
     std::cout << "开始为每批生成粒子位置..." << std::endl;
 
@@ -318,12 +314,19 @@ int main() {
                         particles_per_batch + remaining_particles : 
                         particles_per_batch;
         
+        // 根据控制模式限制批次大小
+        if (control_mode == ControlMode::BY_COUNT && total_generated + batch_size > max_particles) {
+            batch_size = max_particles - total_generated;
+        } else if (control_mode == ControlMode::BY_MASS && current_total_mass + batch_size * particle_mass > target_total_mass) {
+            batch_size = (int)((target_total_mass - current_total_mass) / particle_mass);
+        }
+        
+        if (batch_size <= 0) break;
+        
         // 为当前批次生成粒子
         int batch_generated = 0;
         float current_z = insertion_height;  // 从固定高度开始
         int batch_layers = 0;
-        
-        // std::cout << "\n批次 " << batch + 1 << " 开始生成..." << std::endl;
         
         while (batch_generated < batch_size) {
             float3 layer_center = make_float3(0, 0, current_z);
@@ -348,25 +351,27 @@ int main() {
                 current_total_mass += particle_mass;
             }
             
-            // std::cout << "  层 " << batch_layers << " (z=" << current_z/particle_diameter 
-            //         << "d): 生成 " << layer_particles << " 个粒子" << std::endl;
-            
             batch_layers++;
             current_z += spacing;  // 向上移动到下一层
         }
         
         total_generated += batch_generated;
         
-        // std::cout << "批次 " << batch + 1 << " 完成: " << batch_generated 
-        //         << " 个粒子，共 " << batch_layers << " 层" 
-        //         << "，高度范围: " << insertion_height/particle_diameter << "d ~ " 
-        //         << current_z/particle_diameter << "d" << std::endl;
+        // 检查是否达到控制目标
+        if ((control_mode == ControlMode::BY_COUNT && total_generated >= max_particles) ||
+            (control_mode == ControlMode::BY_MASS && current_total_mass >= target_total_mass)) {
+            std::cout << "已达到控制目标，停止生成粒子" << std::endl;
+            actual_batches_used = batch + 1;  // 设置实际使用的批次数
+            break;
+        }
+        
+        actual_batches_used = batch + 1;  // 更新实际使用的批次数
     }
 
     // 将生成的粒子分配到各批次
     int particle_index = 0;
-    for (int batch = 0; batch < num_batches; batch++) {
-        int batch_size = (batch == num_batches - 1) ? 
+    for (int batch = 0; batch < actual_batches_used; batch++) {
+        int batch_size = (batch == actual_batches_used - 1 && actual_batches_used == num_batches) ? 
                          particles_per_batch + remaining_particles : 
                          particles_per_batch;
         
@@ -401,7 +406,8 @@ int main() {
     std::cout << "\n=== 粒子生成准备完成 ===" << std::endl;
     std::cout << "生成层数: " << layer_count << std::endl;
     std::cout << "实际准备粒子数: " << total_generated << std::endl;
-    std::cout << "实际总质量: " << current_total_mass * 1000 << " g" << std::endl;
+    std::cout << "实际总质量: " << current_total_mass << " kg" << std::endl;
+    std::cout << "实际使用批次数: " << actual_batches_used << std::endl;
     
     switch (control_mode) {
         case ControlMode::BY_COUNT:
@@ -410,7 +416,7 @@ int main() {
             break;
             
         case ControlMode::BY_MASS:
-            std::cout << "目标总质量: " << target_total_mass * 1000 << " g" << std::endl;
+            std::cout << "目标总质量: " << target_total_mass << " kg" << std::endl;
             std::cout << "完成率: " << (current_total_mass / target_total_mass * 100) << "%" << std::endl;
             break;
     }
@@ -454,8 +460,14 @@ int main() {
 
     // 主仿真循环
     for (int frame = 0; frame <= frames_total; frame++) {
-        // 在前90帧分批插入粒子
-        if (frame % frames_between_batches == 0 && current_batch < num_batches) {
+        // 在前N帧分批插入粒子
+        if (frame % frames_between_batches == 0 && current_batch < actual_batches_used) {
+            // 跳过空批次（额外的安全检查）
+            if (batch_templates[current_batch].empty()) {
+                current_batch++;
+                continue;
+            }
+            
             // 获取当前最高点
             float current_max_z = 0.0f;
             if (current_batch > 0) {
@@ -464,7 +476,7 @@ int main() {
             }
             
             // 动态调整插入高度：在当前最高点上方留出安全距离
-            float safety_margin = 5.0f * particle_diameter;  // 20倍粒径的安全距离
+            float safety_margin = 5.0f * particle_diameter;  // 5倍粒径的安全距离
             float dynamic_insertion_height = std::max(insertion_height, 
                                                     current_max_z + safety_margin);
             
@@ -497,18 +509,17 @@ int main() {
             current_batch++;
         }
 
-        // 每10帧输出一次文件
+        // 每5帧输出一次文件
         if (frame % 5 == 0) {
             // 生成输出文件名
             char filename[200];
             sprintf(filename, "compression_output_%04d.csv", frame);
-            DEMSim.WriteSphereFile(out_dir / filename);
+            DEMSim.WriteClumpFile(out_dir / filename);
 
-
-            // 同时输出mesh文件
-            char meshfilename[200];
-            sprintf(meshfilename, "compression_plate_%04d.vtk", frame);
-            DEMSim.WriteMeshFile(out_dir / meshfilename);
+            // // 同时输出mesh文件
+            // char meshfilename[200];
+            // sprintf(meshfilename, "compression_plate_%04d.vtk", frame);
+            // DEMSim.WriteMeshFile(out_dir / meshfilename);
         
             // 进度报告
             std::cout << "帧: " << frame << " - 输出文件已保存 - 当前系统中粒子数: " << DEMSim.GetNumClumps() << std::endl;
@@ -518,20 +529,24 @@ int main() {
             std::cout << "帧: " << frame << " - 当前系统中粒子数: " << DEMSim.GetNumClumps() << std::endl;
         }
         
-        // 推进仿真0.005秒
-        DEMSim.DoDynamics(time_per_frame); // 每帧推进0.005秒
+        // 推进仿真
+        DEMSim.DoDynamics(time_per_frame); // 每帧推进指定时间
         DEMSim.ShowThreadCollaborationStats();
     }
 
     // =========================================================================
-    // 12. 后处理
+    // 10. 后处理
     // =========================================================================
-
 
     // 性能统计
     std::chrono::high_resolution_clock::time_point end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> time_sec = std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
     std::cout << "\n仿真完成, 耗时: " << time_sec.count() << " 秒" << std::endl;
+    
+    // 输出控制模式统计
+    std::cout << "\n=== 最终统计 ===" << std::endl;
+    std::cout << "使用控制模式: " << (control_mode == ControlMode::BY_COUNT ? "粒子数量控制" : "总质量控制") << std::endl;
+    std::cout << "最终粒子数: " << DEMSim.GetNumClumps() << std::endl;
     
     DEMSim.ShowTimingStats();
     
@@ -542,6 +557,6 @@ int main() {
     DEMSim.ShowMemStats();
     std::cout << "----------------------------------------" << std::endl;
 
-    std::cout << "SUPdemo_Mixer 退出..." << std::endl;
+    std::cout << "SUPdemo_Mixer_Part1 (双重控制模式) 退出..." << std::endl;
     return 0;
 }

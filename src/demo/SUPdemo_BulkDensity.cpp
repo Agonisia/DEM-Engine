@@ -27,18 +27,18 @@ int main() {
     // =========================================================================
     
     // === SUP模型核心参数（集中管理） ===
-    const float my_scale_factor = 2.0f;                    // SUP缩放因子
-    const int scale_force_index = 2;                       // 力的缩放指数
+    const float my_scale_factor = 4.0f;                    // SUP缩放因子
     const int base_particle_count = 1600000;               // 基准粒子数量（缩放因子为1时）
     const float base_particle_diameter = 0.0005f;          // 基准粒子直径：0.5mm
     const float particle_density = 1000.0f;                // 颗粒密度：1000 kg/m³
-    const int num_batches = 16;                             // 分批插入的批次数
-    const int frames_between_batches = 10;                 // 每批次之间的帧数
-    const int frames_total = 25;
+    const float particle_cohesion = 0.0f;                  // 颗粒间粘聚力
 
     // === 时间参数 ===
     const float step_size = 1e-6f;                         // 时间步长
     const float time_per_frame = 1e-2f;                    // 每帧仿真时间
+    const int num_batches = 16;                            // 分批插入的批次数
+    const int frames_between_batches = 5;                  // 每批次之间的帧数
+    const int frames_total = 150;
 
     // === 根据缩放因子自动计算的参数 ===
     const float particle_diameter = base_particle_diameter * my_scale_factor;
@@ -49,7 +49,7 @@ int main() {
     const float total_mass = base_particle_count * particle_density * (4.0/3.0) * 3.14159265359 * pow(base_particle_diameter/2.0f, 3);
     const int particles_per_batch = actual_particle_count / num_batches;               // 每批次的粒子数
     const int remaining_particles = actual_particle_count % num_batches;               // 剩余粒子加到最后一批
-    const float batch_interval_time = frames_between_batches * time_per_frame; // 每批次间隔时间
+    const float batch_interval_time = frames_between_batches * time_per_frame;         // 每批次间隔时间
 
     // === 仿真域参数 ===
     const float domain_size = 0.040f;                      // 40mm × 40mm 水平尺寸
@@ -90,8 +90,8 @@ int main() {
     srand(52);
 
     // 创建输出目录
-    path out_dir = current_path();
-    out_dir += "/SUP_BulkDensity_factor2_coe005";  // 输出目录路径
+    path out_dir = "/home/peize/research/DEM-Engine/build";
+    out_dir += "/BulkDensityOutput_factor2_coe005";  // 输出目录路径
 
     // =========================================================================
     // 2. 材料属性
@@ -102,9 +102,10 @@ int main() {
         {"E", 1e7},         // 杨氏模量
         {"nu", 0.3},        // 泊松比
         {"CoR", 0.1},       // 恢复系数
-        {"mu", 0.3},          // 滑动摩擦系数
-        {"Crr", 0},      // 滚动摩擦系数
-        {"Cohesion", 0}        // 粘聚力
+        {"mu", 0},          // 滑动摩擦系数
+        {"Crr", 0},         // 滚动摩擦系数
+        {"Cohesion", 0},    // 粘聚力
+        {"scale_factor_l", my_scale_factor}
     });
 
     // 定义颗粒材料
@@ -114,42 +115,21 @@ int main() {
         {"CoR", 0.1},        
         {"mu", 0.3},
         {"Crr", 0},
-        {"Cohesion", 0.05}
+        {"Cohesion", particle_cohesion},
+        {"scale_factor_l", my_scale_factor}
     });
 
-    auto mat_type_smooth = DEMSim.LoadMaterial({
-        {"E", 1e7},         
-        {"nu", 0.3},        
-        {"CoR", 0.1},        
-        {"mu", 0},
-        {"Crr", 0},
-        {"Cohesion", 0}
-    });
-    
     // 设置材料相互作用属性 - 颗粒与墙壁
-    DEMSim.SetMaterialPropertyPair("CoR", mat_type_walls, mat_type_particles, 0.5); 
-    DEMSim.SetMaterialPropertyPair("mu", mat_type_walls, mat_type_particles, 0.5);
-    DEMSim.SetMaterialPropertyPair("Crr", mat_type_walls, mat_type_particles, 0.03);
+    DEMSim.SetMaterialPropertyPair("CoR", mat_type_walls, mat_type_particles, 0.1); 
+    DEMSim.SetMaterialPropertyPair("mu", mat_type_walls, mat_type_particles, 0.0);
+    DEMSim.SetMaterialPropertyPair("Crr", mat_type_walls, mat_type_particles, 0.0);
     DEMSim.SetMaterialPropertyPair("Cohesion", mat_type_walls, mat_type_particles, 0);
 
-    // 设置材料相互作用属性 - 光滑面与颗粒
-    DEMSim.SetMaterialPropertyPair("CoR", mat_type_smooth, mat_type_particles, 0.1);
-    DEMSim.SetMaterialPropertyPair("mu", mat_type_smooth, mat_type_particles, 0.0);
-    DEMSim.SetMaterialPropertyPair("Crr", mat_type_smooth, mat_type_particles, 0.0);
-    DEMSim.SetMaterialPropertyPair("Cohesion", mat_type_smooth, mat_type_particles, 0.0);
-
-    // 设置材料相互作用属性 - 光滑面与墙壁
-    DEMSim.SetMaterialPropertyPair("CoR", mat_type_smooth, mat_type_walls, 0.1);
-    DEMSim.SetMaterialPropertyPair("mu", mat_type_smooth, mat_type_walls, 0.0);
-    DEMSim.SetMaterialPropertyPair("Crr", mat_type_smooth, mat_type_walls, 0.0);
-    DEMSim.SetMaterialPropertyPair("Cohesion", mat_type_smooth, mat_type_walls, 0.0);
- 
     // 加载SUP接触力模型
     auto model_SUP = DEMSim.ReadContactForceModel("ForceModelSUP.cu");
-    model_SUP->SetMustHaveMatProp({"E", "nu", "CoR", "mu", "Crr", "Cohesion"});
+    model_SUP->SetMustHaveMatProp({"E", "nu", "CoR", "mu", "Crr", "Cohesion", "scale_factor_l"});
     model_SUP->SetMustPairwiseMatProp({"CoR", "mu", "Crr", "Cohesion"});
-    model_SUP->SetPerContactWildcards({"delta_time", "delta_tan_x", "delta_tan_y", "delta_tan_z", 
-                                    "scale_factor_l", "scale_force_index"});
+    model_SUP->SetPerContactWildcards({"delta_time", "delta_tan_x", "delta_tan_y", "delta_tan_z"});
 
 
     // =========================================================================
@@ -164,7 +144,7 @@ int main() {
     );
 
     // 设置边界条件 - 顶部开放
-    DEMSim.InstructBoxDomainBoundingBC("top_open", mat_type_smooth);
+    DEMSim.InstructBoxDomainBoundingBC("top_open", mat_type_walls);
 
     // 设置物理参数
     DEMSim.SetInitTimeStep(step_size);
@@ -183,7 +163,7 @@ int main() {
     // --- 5.1 粒子/团簇模板 ---
 
     // 模板生成参数
-    int num_template = 6;                              // 随机团簇模板总数
+    int num_template = 1;                              // 随机团簇模板总数
     int min_sphere = 1;                                // 每个团簇最少球数
     int max_sphere = 1;                                // 每个团簇最多球数
     float min_rad = particle_radius;
@@ -318,8 +298,6 @@ int main() {
         float current_z = fixed_insertion_height;  // 从固定高度开始
         int batch_layers = 0;
         
-        std::cout << "\n批次 " << batch + 1 << " 开始生成..." << std::endl;
-        
         while (batch_generated < batch_size) {
             float3 layer_center = make_float3(0, 0, current_z);
             float3 half_dimensions = make_float3(insertion_half_size, insertion_half_size, 0);
@@ -344,19 +322,11 @@ int main() {
                 current_total_mass += particle_mass;
             }
             
-            // std::cout << "  层 " << batch_layers << " (z=" << current_z/particle_diameter 
-            //         << "d): 生成 " << layer_particles << " 个粒子" << std::endl;
-            
             batch_layers++;
             current_z += spacing;  // 向上移动到下一层
         }
         
         total_generated += batch_generated;
-        
-        // std::cout << "批次 " << batch + 1 << " 完成: " << batch_generated 
-        //         << " 个粒子，共 " << batch_layers << " 层" 
-        //         << "，高度范围: " << fixed_insertion_height/particle_diameter << "d ~ " 
-        //         << current_z/particle_diameter << "d" << std::endl;
     }
 
     // 将生成的粒子分配到各批次
@@ -419,9 +389,6 @@ int main() {
     // Initialize the simulation system
     DEMSim.Initialize();
     
-    // Set initial conditions for SUP model
-    DEMSim.SetFamilyContactWildcardValueBoth(FAMILY_PARTICLES, "scale_factor_l", my_scale_factor);
-
     // =========================================================================
     // 8. OUTPUT SETUP 
     // =========================================================================
@@ -448,7 +415,7 @@ int main() {
     int current_batch = 0;
     
     // 主仿真循环
-    for (int frame = 1; frame <= frames_total; frame++) {
+    for (int frame = 0; frame <= frames_total; frame++) {
         // 在前90帧分批插入粒子
         if (frame % frames_between_batches == 0 && current_batch < num_batches) {
             // 获取当前最高点
@@ -491,24 +458,36 @@ int main() {
             
             current_batch++;
         }
-        
-        // 每5帧输出一次文件
-        if (frame % 5 == 0) {
-            // 生成输出文件名
-            char unifiedfile[200];
-            std::string dir_name_str = out_dir.string();
-            size_t pos_coe = dir_name_str.find("_coe");
-            size_t pos_factor = dir_name_str.find("_factor");
-            std::string coe_part = dir_name_str.substr(pos_coe + 4, pos_factor - pos_coe - 4);
-            std::string factor_part = dir_name_str.substr(pos_factor + 7);
 
-            sprintf(unifiedfile, "%s/SUPdemo_f%sc%s_%04d.csv", out_dir.c_str(), 
-                    factor_part.c_str(), coe_part.c_str(), frame);             
-            
+        // 每10帧输出一次文件
+        if (frame % 10 == 0) {
+            // 生成输出文件名
+            char filename[200], contact_filename[200];
+            std::string dir_name_str = out_dir.string();
+
+            // 找到factor和coe的位置
+            size_t pos_factor = dir_name_str.find("factor");
+            size_t pos_coe = dir_name_str.find("_coe");
+
+            // 正确提取factor部分（从"factor"后面到"_coe"之前）
+            std::string factor_part = dir_name_str.substr(pos_factor + 6, pos_coe - pos_factor - 6);
+
+            // 正确提取coe部分（从"_coe"后面到字符串结尾）
+            std::string coe_part = dir_name_str.substr(pos_coe + 4);
+
+            sprintf(filename, "%s/bulkdensity_output_f%sc%s_%04d.csv", out_dir.c_str(), 
+                    factor_part.c_str(), coe_part.c_str(), frame);
             
             // 写入输出文件
-            DEMSim.WriteUnifiedFile(std::string(unifiedfile));
-            
+            DEMSim.WriteClumpFile(std::string(filename));
+
+            // 生成接触文件名
+            sprintf(contact_filename, "%s/bulkdensity_contacts_f%sc%s_%04d.csv", out_dir.c_str(),
+                    factor_part.c_str(), coe_part.c_str(), frame);
+
+            // 写入接触文件
+            DEMSim.WriteContactFile(std::string(contact_filename));
+
             // 进度报告
             std::cout << "帧: " << frame << " - 输出文件已保存 - 当前系统中粒子数: " << DEMSim.GetNumClumps() << std::endl;
 
@@ -525,7 +504,6 @@ int main() {
     // =========================================================================
     // 12. 后处理
     // =========================================================================
-
 
     // 性能统计
     std::chrono::high_resolution_clock::time_point end = std::chrono::high_resolution_clock::now();

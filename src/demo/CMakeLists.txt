@@ -45,6 +45,7 @@ SET(DEMOS
 		SUPdemo_TestOverlap
 		SUPdemo_BulkCompress
 		SUPdemo_Mixer_Part1
+		SUPdemo_Mixer_Part2
 )
 
 # ------------------------------------------------------------------------------
