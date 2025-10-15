@@ -4,7 +4,7 @@
 //	SPDX-License-Identifier: BSD-3-Clause
 
 // =============================================================================
-// SUP模型搅拌器仿真：Part2 - 读取粒子配置并运行搅拌仿真
+// SUP模型搅拌器仿真：Part2 - 读取粒子配置并运行搅拌仿真（增加动能监测）
 // =============================================================================
 
 #include <core/ApiVersion.h>
@@ -19,6 +19,8 @@
 #include <fstream>
 #include <vector>
 #include <map>
+#include <algorithm>
+#include <iomanip>
 
 using namespace deme;
 using namespace std::filesystem;
@@ -43,9 +45,9 @@ int main() {
                                pow(particle_radius, 3);
     
     // === 搅拌器参数 ===
-    const float mixer_speed_rpm = 60.0f;                   // 搅拌器转速：60 RPM
+    const float mixer_speed_rpm = 300.0f;                 // 搅拌器转速：300 RPM
     const float mixer_angular_velocity = mixer_speed_rpm * 2.0f * 3.14159265359f / 60.0f; // rad/s
-    const float simulation_time = 10.0f;                   // 仿真时间：10秒
+    const float simulation_time = 5.0f;                   // 仿真时间：10秒
     
     // === 时间参数 ===
     const float step_size = 1e-6f;                         // 时间步长
@@ -60,17 +62,17 @@ int main() {
     const unsigned int FAMILY_PARTICLES = 2;
     
     // === 输入文件路径 ===
-    const std::string input_dir = "/home/peize/research/DEME_data/250911/";
+    const std::string input_dir = "/home/huyuze/DEM-Data/";
     const std::string input_file = "SUPMixer_f4c000.csv";  // 根据实际文件名调整
     
     // 输出SUP模型信息
-    std::cout << "\n========== SUPdemo_Mixer_Part2 ==========" << std::endl;
+    std::cout << "\n========== SUPdemo_Mixer_Part2 (with Energy Monitoring) ==========" << std::endl;
     std::cout << "缩放因子: " << my_scale_factor << std::endl;
     std::cout << "粒子直径: " << particle_diameter * 1000 << " mm" << std::endl;
     std::cout << "搅拌器转速: " << mixer_speed_rpm << " RPM" << std::endl;
     std::cout << "仿真时间: " << simulation_time << " 秒" << std::endl;
     std::cout << "输入文件: " << input_dir + input_file << std::endl;
-    std::cout << "========================================\n" << std::endl;
+    std::cout << "===================================================================\n" << std::endl;
 
     // 创建求解器实例
     DEMSolver DEMSim;
@@ -80,7 +82,7 @@ int main() {
     DEMSim.SetOutputFormat(OUTPUT_FORMAT::CSV);
     DEMSim.SetOutputContent({"VEL", "ANG_VEL"}); 
     DEMSim.SetContactOutputFormat(OUTPUT_FORMAT::CSV);
-    DEMSim.SetContactOutputContent({"CNT_TYPE", "FORCE", "TORQUE"});
+    DEMSim.SetContactOutputContent({"CNT_TYPE", "FORCE", "POINT"});
 
     // =========================================================================
     // 2. 材料属性设置
@@ -216,14 +218,34 @@ int main() {
     
     // 禁用搅拌器的自接触
     DEMSim.DisableContactBetweenFamilies(FAMILY_MIXER, FAMILY_MIXER);
+    
+    // 创建搅拌器的Tracker
+    auto mixer_tracker = DEMSim.Track(mixer);
 
     // =========================================================================
-    // 6. 创建输出目录
+    // 6. 创建输出目录和Inspector
     // =========================================================================
     
     // 创建输出目录
-    path out_dir = current_path() / "SUPMixerOutput_Part2";
+    path out_dir = current_path() / "SUPMixerOutput_Part2_4";
     create_directory(out_dir);
+    
+    // 创建Inspector对象
+    auto KE_inspector = DEMSim.CreateInspector("clump_kinetic_energy");
+    auto max_v_inspector = DEMSim.CreateInspector("clump_max_absv");
+    auto max_z_inspector = DEMSim.CreateInspector("clump_max_z");
+    auto min_z_inspector = DEMSim.CreateInspector("clump_min_z");
+    
+    // 创建数据输出文件
+    std::ofstream energy_file(out_dir / "kinetic_energy_history.csv");
+    energy_file << "Time(s),Frame,KineticEnergy(J),MaxVelocity(m/s),"
+                << "MaxZ(m),MinZ(m),AvgContacts,MixerTorque(Nm)" << std::endl;
+    
+    // 用于存储时序数据
+    std::vector<float> time_history;
+    std::vector<float> KE_history;
+    std::vector<float> max_v_history;
+    std::vector<float> mixer_torque_history;
 
     // =========================================================================
     // 7. 系统初始化
@@ -238,6 +260,7 @@ int main() {
     
     std::cout << "\n=== 开始搅拌仿真 ===" << std::endl;
     std::cout << "搅拌器角速度: " << mixer_angular_velocity << " rad/s" << std::endl;
+    std::cout << "监测参数: 动能, 速度, 位置, 接触数, 搅拌器扭矩" << std::endl;
     
     unsigned int frame_steps = (unsigned int)(time_per_frame / step_size);
     unsigned int curr_step = 0;
@@ -252,7 +275,54 @@ int main() {
         
         // 每帧输出
         if (curr_step % frame_steps == 0) {
-            std::cout << "\n--- 帧 " << frame_count << " ---" << std::endl;
+            std::cout << "\n--- 帧 " << frame_count << " (t = " << current_time << " s) ---" << std::endl;
+            
+            // 获取Inspector值
+            float KE = KE_inspector->GetValue();
+            float max_v = max_v_inspector->GetValue();
+            float max_z = max_z_inspector->GetValue();
+            float min_z = min_z_inspector->GetValue();
+            float avg_contacts = DEMSim.GetAvgSphContacts();
+            
+            // 获取搅拌器扭矩
+            float mixer_torque = 0.0f;
+            std::vector<float3> forces, points;
+            mixer_tracker->GetContactForcesForAll(points, forces);
+            
+            // 计算总扭矩（绕z轴）
+            for (size_t i = 0; i < points.size(); i++) {
+                float3 r = points[i]; // 相对于原点的位置向量
+                float3 F = forces[i];
+                // 扭矩的z分量: T_z = r_x * F_y - r_y * F_x
+                mixer_torque += r.x * F.y - r.y * F.x;
+            }
+            
+            // 存储历史数据
+            time_history.push_back(current_time);
+            KE_history.push_back(KE);
+            max_v_history.push_back(max_v);
+            mixer_torque_history.push_back(mixer_torque);
+            
+            // 写入CSV文件（实时写入）
+            energy_file << std::fixed << std::setprecision(6)
+                       << current_time << "," 
+                       << frame_count << "," 
+                       << KE << "," 
+                       << max_v << "," 
+                       << max_z << ","
+                       << min_z << ","
+                       << avg_contacts << ","
+                       << mixer_torque << std::endl;
+            energy_file.flush(); // 确保数据被写入
+            
+            // 在控制台显示
+            std::cout << std::fixed << std::setprecision(4);
+            std::cout << "系统动能: " << KE << " J" << std::endl;
+            std::cout << "最大速度: " << max_v << " m/s" << std::endl;
+            std::cout << "颗粒高度范围: [" << min_z << ", " << max_z << "] m" << std::endl;
+            std::cout << "平均接触数: " << avg_contacts << std::endl;
+            std::cout << "搅拌器扭矩: " << mixer_torque << " Nm" << std::endl;
+            std::cout << "搅拌器接触点数: " << points.size() << std::endl;
             
             // 显示线程协作统计
             DEMSim.ShowThreadCollaborationStats();
@@ -279,22 +349,100 @@ int main() {
         current_time += step_size;
     }
     
+    // 关闭数据文件
+    energy_file.close();
+    
     std::chrono::high_resolution_clock::time_point end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> time_sec = std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
     
     // =========================================================================
     // 9. 后处理和统计
     // =========================================================================
-    
-    // 最终状态输出
-    DEMSim.WriteClumpFile(out_dir / "final_state.csv");
-    DEMSim.WriteContactFile(out_dir / "final_contacts.csv");
-    
+   
     std::cout << "\n=== 仿真完成 ===" << std::endl;
     std::cout << "总运行时间: " << time_sec.count() << " 秒" << std::endl;
     std::cout << "输出目录: " << out_dir << std::endl;
+    std::cout << "数据文件: kinetic_energy_history.csv" << std::endl;
     
-    // 显示统计信息
+    // 计算并显示能量统计
+    if (!KE_history.empty()) {
+        float avg_KE = 0.0f;
+        float max_KE = KE_history[0];
+        float min_KE = KE_history[0];
+        
+        float avg_torque = 0.0f;
+        float max_torque = std::abs(mixer_torque_history[0]);
+        
+        for (size_t i = 0; i < KE_history.size(); i++) {
+            avg_KE += KE_history[i];
+            max_KE = std::max(max_KE, KE_history[i]);
+            min_KE = std::min(min_KE, KE_history[i]);
+            
+            avg_torque += std::abs(mixer_torque_history[i]);
+            max_torque = std::max(max_torque, std::abs(mixer_torque_history[i]));
+        }
+        avg_KE /= KE_history.size();
+        avg_torque /= mixer_torque_history.size();
+        
+        std::cout << "\n--- 动能统计 ---" << std::endl;
+        std::cout << "平均动能: " << avg_KE << " J" << std::endl;
+        std::cout << "最大动能: " << max_KE << " J" << std::endl;
+        std::cout << "最小动能: " << min_KE << " J" << std::endl;
+        std::cout << "最终动能: " << KE_history.back() << " J" << std::endl;
+        
+        std::cout << "\n--- 搅拌器扭矩统计 ---" << std::endl;
+        std::cout << "平均扭矩(绝对值): " << avg_torque << " Nm" << std::endl;
+        std::cout << "最大扭矩(绝对值): " << max_torque << " Nm" << std::endl;
+        
+        // 计算稳态判定（最后1秒的变化）
+        if (time_history.size() >= 100) {
+            size_t start_idx = time_history.size() - 100;
+            float recent_avg_KE = 0.0f;
+            for (size_t i = start_idx; i < KE_history.size(); i++) {
+                recent_avg_KE += KE_history[i];
+            }
+            recent_avg_KE /= (KE_history.size() - start_idx);
+            
+            float KE_variation = std::abs(recent_avg_KE - avg_KE) / avg_KE * 100;
+            std::cout << "\n--- 稳态分析 ---" << std::endl;
+            std::cout << "最后1秒平均动能: " << recent_avg_KE << " J" << std::endl;
+            std::cout << "动能变化率: " << KE_variation << "%" << std::endl;
+            if (KE_variation < 5) {
+                std::cout << "系统接近稳态" << std::endl;
+            } else {
+                std::cout << "系统尚未达到稳态" << std::endl;
+            }
+        }
+        
+        // 写入统计文件
+        std::ofstream stats_file(out_dir / "simulation_statistics.txt");
+        stats_file << "SUP Mixer Simulation Statistics\n";
+        stats_file << "================================\n";
+        stats_file << "Simulation Parameters:\n";
+        stats_file << "  Simulation Time: " << simulation_time << " s\n";
+        stats_file << "  Number of Particles: " << in_xyz.size() << "\n";
+        stats_file << "  Scale Factor: " << my_scale_factor << "\n";
+        stats_file << "  Particle Diameter: " << particle_diameter * 1000 << " mm\n";
+        stats_file << "  Particle Mass: " << particle_mass << " kg\n";
+        stats_file << "  Mixer Speed: " << mixer_speed_rpm << " RPM\n";
+        stats_file << "  Time Step: " << step_size << " s\n";
+        stats_file << "\nKinetic Energy Statistics:\n";
+        stats_file << "  Average: " << avg_KE << " J\n";
+        stats_file << "  Maximum: " << max_KE << " J\n";
+        stats_file << "  Minimum: " << min_KE << " J\n";
+        stats_file << "  Final: " << KE_history.back() << " J\n";
+        stats_file << "\nMixer Torque Statistics:\n";
+        stats_file << "  Average (abs): " << avg_torque << " Nm\n";
+        stats_file << "  Maximum (abs): " << max_torque << " Nm\n";
+        stats_file << "\nComputation Performance:\n";
+        stats_file << "  Total Runtime: " << time_sec.count() << " s\n";
+        stats_file << "  Real-time Factor: " << simulation_time / time_sec.count() << "\n";
+        stats_file.close();
+        
+        std::cout << "\n统计文件已保存至: simulation_statistics.txt" << std::endl;
+    }
+    
+    // 显示详细统计信息
     std::cout << "\n--- 时间统计 ---" << std::endl;
     DEMSim.ShowTimingStats();
     DEMSim.ClearTimingStats();
