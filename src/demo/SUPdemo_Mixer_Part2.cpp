@@ -4,7 +4,7 @@
 //	SPDX-License-Identifier: BSD-3-Clause
 
 // =============================================================================
-// SUP模型搅拌器仿真：Part2 - 读取粒子配置并运行搅拌仿真（增加动能监测）
+// SUP模型搅拌器仿真：Part2 - 读取粒子配置并运行搅拌仿真
 // =============================================================================
 
 #include <core/ApiVersion.h>
@@ -63,10 +63,11 @@ int main() {
     
     // === 输入文件路径 ===
     const std::string input_dir = "/home/huyuze/DEM-Data/";
-    const std::string input_file = "SUPMixer_f4c000.csv";  // 根据实际文件名调整
-    
+    int scale_int = static_cast<int>(my_scale_factor);
+    const std::string input_file = "SUPMixer_f" + std::to_string(scale_int) + "c000.csv"; // 根据实际文件名调整
+
     // 输出SUP模型信息
-    std::cout << "\n========== SUPdemo_Mixer_Part2 (with Energy Monitoring) ==========" << std::endl;
+    std::cout << "\n========== SUPdemo_Mixer_Part2  ==========" << std::endl;
     std::cout << "缩放因子: " << my_scale_factor << std::endl;
     std::cout << "粒子直径: " << particle_diameter * 1000 << " mm" << std::endl;
     std::cout << "搅拌器转速: " << mixer_speed_rpm << " RPM" << std::endl;
@@ -227,7 +228,8 @@ int main() {
     // =========================================================================
     
     // 创建输出目录
-    path out_dir = current_path() / "SUPMixerOutput_Part2_4";
+    std::string dir_name = "SUPMixerOutput_f" + std::to_string((int)my_scale_factor);
+    std::filesystem::path out_dir = std::filesystem::current_path() / dir_name;
     create_directory(out_dir);
     
     // 创建Inspector对象
