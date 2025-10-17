@@ -7,19 +7,30 @@ from numba import jit, prange
 import glob
 from pathlib import Path
 from typing import Tuple, Dict, Optional
+import matplotlib
+import matplotlib.pyplot as plt
 
 # ======================== 配置参数 ========================
 class Config:
     """配置参数集中管理"""
-    def __init__(self, scale_factor: int = 4):
+    def __init__(self, scale_factor: int = 4, enable_plotting: bool = False):
         self.scale_factor = scale_factor
         self.input_path = Path(f'build/SUPMixerOutput_f{scale_factor}/')
-        self.output_path = Path(f'sta_results/f{scale_factor}/')
+        self.output_path = Path(f'analysis_results/f{scale_factor}/')
         self.RPM = 300  # 搅拌器转速
         self.dt = 1e-6  # 时间步长
         self.frame_skip = 100  # 每隔多少帧读取一次数据
         self.max_sample_size = 100000  # 最大采样行数
         self.chunk_size = 10000  # 分块读取大小
+        
+        # 绘图控制参数
+        self.enable_plotting = enable_plotting  # 是否生成图表
+        self.plot_dpi = 150  # 图片DPI
+        self.plot_show = False  # 是否显示图表（False则只保存）
+        
+        # 如果不绘图，使用非交互式后端以避免GUI依赖
+        if not enable_plotting:
+            matplotlib.use('Agg')
         
         # 创建输出目录
         self.output_path.mkdir(parents=True, exist_ok=True)
@@ -293,10 +304,80 @@ class StatisticalAnalyzer:
             }
         }
 
+# ======================== 绘图类 ========================
+class PlotGenerator:
+    """生成分析图表"""
+    def __init__(self, config: Config):
+        self.config = config
+        
+    def plot_velocity_pdf(self, pdf_data: pd.DataFrame) -> None:
+        """绘制速度概率密度分布图"""
+        plt.figure(figsize=(10, 6))
+        plt.plot(pdf_data['velocity_center'], 
+                pdf_data['probability_density'], 
+                'b-', linewidth=2, label=f'f{self.config.scale_factor}')
+        plt.xlabel('Velocity (m/s)', fontsize=12)
+        plt.ylabel('Probability Density', fontsize=12)
+        plt.title(f'Velocity PDF - SUP Scale Factor f{self.config.scale_factor}', fontsize=14)
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.savefig(self.config.output_path / f'PDF_f{self.config.scale_factor}.png', 
+                   dpi=self.config.plot_dpi, bbox_inches='tight')
+        if self.config.plot_show:
+            plt.show()
+        plt.close()
+    
+    def plot_radial_velocity(self, radial_stats: pd.DataFrame) -> None:
+        """绘制径向速度分布图"""
+        plt.figure(figsize=(10, 6))
+        radial_means = radial_stats[('v_total', 'mean')]
+        plt.plot(radial_means.index * 1000, radial_means.values, 'r-', linewidth=2)
+        plt.xlabel('Radial Distance (mm)', fontsize=12)
+        plt.ylabel('Mean Velocity (m/s)', fontsize=12)
+        plt.title(f'Radial Velocity Distribution - f{self.config.scale_factor}', fontsize=14)
+        plt.grid(True, alpha=0.3)
+        plt.savefig(self.config.output_path / f'RadialVelocity_f{self.config.scale_factor}.png',
+                   dpi=self.config.plot_dpi, bbox_inches='tight')
+        if self.config.plot_show:
+            plt.show()
+        plt.close()
+    
+    def plot_angle_velocity(self, angle_stats: pd.DataFrame) -> None:
+        """绘制角度-速度分布图（可选的额外图表）"""
+        plt.figure(figsize=(12, 5))
+        
+        # 子图1：平均速度vs角度
+        plt.subplot(1, 2, 1)
+        angles = (angle_stats.index - 1) * 10 + 5  # 转换为角度中心值
+        plt.plot(angles, angle_stats[('v_total', 'mean')], 'b-', linewidth=2)
+        plt.xlabel('Angle (degrees)', fontsize=11)
+        plt.ylabel('Mean Velocity (m/s)', fontsize=11)
+        plt.title('Angular Velocity Distribution', fontsize=12)
+        plt.grid(True, alpha=0.3)
+        plt.xlim(0, 360)
+        
+        # 子图2：垂直速度vs角度
+        plt.subplot(1, 2, 2)
+        plt.plot(angles, angle_stats[('v_z', 'mean')], 'g-', linewidth=2)
+        plt.axhline(y=0, color='k', linestyle='--', alpha=0.3)
+        plt.xlabel('Angle (degrees)', fontsize=11)
+        plt.ylabel('Mean Vertical Velocity (m/s)', fontsize=11)
+        plt.title('Vertical Velocity vs Angle', fontsize=12)
+        plt.grid(True, alpha=0.3)
+        plt.xlim(0, 360)
+        
+        plt.tight_layout()
+        plt.savefig(self.config.output_path / f'AngleVelocity_f{self.config.scale_factor}.png',
+                   dpi=self.config.plot_dpi, bbox_inches='tight')
+        if self.config.plot_show:
+            plt.show()
+        plt.close()
+
 # ======================== 主程序 ========================
-def main():
+def main(enable_plotting: bool = False, plot_show: bool = False, scale_factor: int = 4):
     # 初始化配置
-    config = Config(scale_factor=4)  # 可以通过参数调整缩放因子
+    config = Config(scale_factor=scale_factor, enable_plotting=enable_plotting)
+    config.plot_show = plot_show  # 设置是否显示图表
     
     print(f"{'='*60}")
     print(f"DEME Mixer Analysis - Scale Factor: f{config.scale_factor}")
@@ -369,7 +450,16 @@ def main():
             f.write(f"  Y: [{summary['spatial_extent']['y_range'][0]:.4f}, {summary['spatial_extent']['y_range'][1]:.4f}]\n")
             f.write(f"  Z: [{summary['spatial_extent']['z_range'][0]:.4f}, {summary['spatial_extent']['z_range'][1]:.4f}]\n")
         
-        # 6. 打印分析摘要
+        # 6. 绘制图表（可选）
+        if config.enable_plotting:
+            print("\n6. Generating plots...")
+            plotter = PlotGenerator(config)
+            plotter.plot_velocity_pdf(pdf_data)
+            plotter.plot_radial_velocity(radial_stats)
+            plotter.plot_angle_velocity(angle_stats)  # 额外的角度分析图
+            print(f"   Plots saved to: {config.output_path}")
+        
+        # 7. 打印分析摘要
         print("\n" + "="*60)
         print("ANALYSIS SUMMARY")
         print("="*60)
@@ -387,6 +477,12 @@ def main():
             print(f"\n⚡ Performance: Pre-calculated velocity used")
         print(f"   Velocity processing time: {velocity_time:.3f} seconds")
         
+        # 绘图状态
+        if config.enable_plotting:
+            print(f"\n📊 Plots: Generated and saved")
+        else:
+            print(f"\n📊 Plots: Disabled (set ENABLE_PLOTTING=True to generate)")
+        
         # 总运行时间
         elapsed = (datetime.datetime.now() - start_time).total_seconds()
         print(f"\nTotal processing time: {elapsed:.2f} seconds")
@@ -401,4 +497,13 @@ def main():
         raise
 
 if __name__ == "__main__":
-    main()
+    # ==================== 配置选项 ====================
+    # 在这里设置运行参数
+    ENABLE_PLOTTING = True   # 是否生成图表 (True/False)
+    SHOW_PLOTS = False       # 是否显示图表窗口 (True/False)，False则只保存文件
+    SCALE_FACTOR = 4        # SUP缩放因子
+    
+    # 运行主程序
+    main(enable_plotting=ENABLE_PLOTTING, 
+         plot_show=SHOW_PLOTS,
+         scale_factor=SCALE_FACTOR)

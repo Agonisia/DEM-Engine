@@ -33,3 +33,8 @@ output/
 backup/
 *.vtk
 *.csv
+
+# Analyze files 
+*.txt
+*.png
+*.csv.gz

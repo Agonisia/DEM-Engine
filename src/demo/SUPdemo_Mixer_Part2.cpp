@@ -47,7 +47,7 @@ int main() {
     // === 搅拌器参数 ===
     const float mixer_speed_rpm = 300.0f;                 // 搅拌器转速：300 RPM
     const float mixer_angular_velocity = mixer_speed_rpm * 2.0f * 3.14159265359f / 60.0f; // rad/s
-    const float simulation_time = 5.0f;                   // 仿真时间：10秒
+    const float simulation_time = 3.0f;                   // 仿真时间：3秒
     
     // === 时间参数 ===
     const float step_size = 1e-6f;                         // 时间步长
@@ -91,7 +91,7 @@ int main() {
     
     // 定义搅拌器材料
     auto mat_type_mixer = DEMSim.LoadMaterial({
-        {"E", 1e7},         
+        {"E", 1e8},         
         {"nu", 0.3},        
         {"CoR", 0.1},       
         {"mu", 0.0},        
@@ -102,7 +102,7 @@ int main() {
     
     // 定义颗粒材料
     auto mat_type_particles = DEMSim.LoadMaterial({
-        {"E", 1e7},         
+        {"E", 1e8},         
         {"nu", 0.3},        
         {"CoR", 0.1},        
         {"mu", 0.3},
