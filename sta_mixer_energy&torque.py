@@ -146,18 +146,25 @@ def interpolate_data(dataframes, directories):
     
     return pd.DataFrame(ke_interpolated), pd.DataFrame(torque_interpolated)
 
-def save_comparison_files(ke_df, torque_df):
+def save_comparison_files(ke_df, torque_df, output_dir="sta_results/torque&energy"):
     """
-    保存比较数据到CSV文件（直接保存在当前目录）
+    保存比较数据到CSV文件（保存在指定的输出目录）
     
     参数:
         ke_df: 动能比较DataFrame
         torque_df: 扭矩比较DataFrame
+        output_dir: 输出目录，默认为"sta_results/torque&energy"
     """
-    # 保存文件到当前目录
-    ke_output_path = "kinetic_energy_comparison.csv"
-    torque_output_path = "mixer_torque_comparison.csv"
+    # 创建输出目录（如果不存在）
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        print(f"\n创建输出目录: {output_dir}")
     
+    # 构建输出文件路径
+    ke_output_path = os.path.join(output_dir, "kinetic_energy_comparison.csv")
+    torque_output_path = os.path.join(output_dir, "mixer_torque_comparison.csv")
+    
+    # 保存文件
     ke_df.to_csv(ke_output_path, index=False, float_format='%.6e')
     torque_df.to_csv(torque_output_path, index=False, float_format='%.6e')
     
