@@ -51,7 +51,7 @@ int main() {
     
     // === 时间参数 ===
     const float step_size = 1e-6f;                         // 时间步长
-    const float time_per_frame = 1e-2f;                    // 每帧仿真时间
+    const float time_per_frame = 1e-3f;                    // 每帧仿真时间
     
     // === 仿真域参数 ===
     const float domain_size = 0.1f;                        // 100mm × 100mm 水平尺寸
@@ -64,7 +64,7 @@ int main() {
     // === 输入文件路径 ===
     const std::string input_dir = "/home/huyuze/DEM-Data/";
     int scale_int = static_cast<int>(my_scale_factor);
-    const std::string input_file = "SUPMixer_f" + std::to_string(scale_int) + "c000.csv"; // 根据实际文件名调整
+    const std::string input_file = "SUPMixer_f" + std::to_string(scale_int) + "se000.csv"; // 根据实际文件名调整
 
     // 输出SUP模型信息
     std::cout << "\n========== SUPdemo_Mixer_Part2  ==========" << std::endl;
@@ -228,7 +228,10 @@ int main() {
     // =========================================================================
     
     // 创建输出目录
-    std::string dir_name = "SUPMixerOutput_f" + std::to_string((int)my_scale_factor);
+    std::ostringstream oss;
+    oss << "SUPMixerOutput_f" << (int)my_scale_factor 
+        << "se" << std::setw(3) << std::setfill('0') << (int)(particle_cohesion * 100);
+    std::string dir_name = oss.str();
     std::filesystem::path out_dir = std::filesystem::current_path() / dir_name;
     create_directory(out_dir);
     
