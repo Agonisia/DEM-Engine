@@ -222,8 +222,8 @@ def main():
     print("=" * 60)
     
     # 可配置参数
-    base_path = "."  # 搜索目录，可以改为"build"或其他路径
-    filter_cohesion = "000"  # 只处理cohesion=0的数据，设为None处理所有
+    base_path = "build"  # 搜索目录，可以改为"build"或其他路径
+    filter_cohesion = "010"  # 只处理cohesion=0的数据，设为None处理所有
     use_interpolation = False  # 是否使用插值
     
     # 1. 查找所有SUP输出目录

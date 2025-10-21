@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-SUP Mixer Velocity Distribution Analysis - Scientific Publication Style
+SUP Mixer Velocity Distribution Analysis - Multi-Directory Comparison Version
 Analyzes particle velocity distributions in DEM mixer simulations with SUP models
+Supports multiple surface energy values comparison
 """
 
 import os
@@ -12,23 +13,35 @@ import numpy as np
 from numba import jit, prange
 import glob
 from pathlib import Path
-from typing import Tuple, Dict, Optional
+from typing import Tuple, Dict, Optional, List
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+import warnings
+warnings.filterwarnings('ignore')
 
 # ======================== Configuration Parameters ========================
 class Config:
-    """Configuration parameter management"""
-    def __init__(self, scale_factor: int = 4, enable_plotting: bool = False):
+    """Configuration parameter management for multi-directory analysis"""
+    def __init__(self, scale_factor: int = 4, surface_energy: str = "000", 
+                 base_path: str = ".", enable_plotting: bool = False,
+                 steady_state_fraction: float = 0.5):
         self.scale_factor = scale_factor
-        self.input_path = Path(f'build/SUPMixerOutput_f{scale_factor}/')
-        self.output_path = Path(f'analysis_results/f{scale_factor}/')
+        self.surface_energy = surface_energy
+        self.base_path = Path(base_path)
+        
+        # Construct input and output paths
+        self.input_path = self.base_path / f'SUPMixerOutput_f{scale_factor}se{surface_energy}'
+        self.output_base = Path(f'sta_results/se{surface_energy}/')
+        self.output_path = self.output_base / f'f{scale_factor}/'
+        
+        # Simulation parameters
         self.RPM = 300  # Mixer rotation speed
         self.dt = 1e-6  # Time step
         self.frame_skip = 100  # Read every nth frame
         self.max_sample_size = 100000  # Maximum sampling rows
         self.chunk_size = 10000  # Chunk reading size
+        self.steady_state_fraction = steady_state_fraction  # Use last fraction of data (0.5 = last half)
         
         # Plotting control parameters
         self.enable_plotting = enable_plotting
@@ -49,8 +62,46 @@ class Config:
         else:
             matplotlib.use('Agg')  # Non-interactive backend
         
-        # Create output directory
+        # Create output directories
         self.output_path.mkdir(parents=True, exist_ok=True)
+        
+    def __str__(self):
+        return f"Config(f{self.scale_factor}se{self.surface_energy})"
+
+class MultiDirectoryConfig:
+    """Configuration for multi-directory comparison analysis"""
+    def __init__(self, base_path: str = ".", filter_cohesion: str = "000",
+                 use_interpolation: bool = False, enable_plotting: bool = True,
+                 steady_state_fraction: float = 0.5):
+        self.base_path = Path(base_path)
+        self.filter_cohesion = filter_cohesion
+        self.use_interpolation = use_interpolation
+        self.enable_plotting = enable_plotting
+        self.steady_state_fraction = steady_state_fraction
+        
+        # Find all matching directories
+        self.directories = self.find_matching_directories()
+        
+    def find_matching_directories(self) -> List[Dict]:
+        """Find all directories matching the pattern"""
+        pattern = f'SUPMixerOutput_f*se*'
+        if self.filter_cohesion:
+            pattern = f'SUPMixerOutput_f*se{self.filter_cohesion}'
+        
+        dirs = []
+        for path in self.base_path.glob(pattern):
+            if path.is_dir():
+                # Extract scale_factor and surface_energy from directory name
+                match = re.match(r'SUPMixerOutput_f(\d+)se(\d+)', path.name)
+                if match:
+                    dirs.append({
+                        'path': path,
+                        'scale_factor': int(match.group(1)),
+                        'surface_energy': match.group(2),
+                        'name': path.name
+                    })
+        
+        return sorted(dirs, key=lambda x: (x['scale_factor'], x['surface_energy']))
 
 # ======================== JIT Accelerated Functions ========================
 @jit(nopython=True, parallel=True)
@@ -131,17 +182,33 @@ class MixerDataProcessor:
         return int(match.group(1)) if match else 0
     
     def get_files_to_read(self, max_files: Optional[int] = None) -> list:
-        """Get list of files to read"""
+        """Get list of files to read (only steady state portion)"""
         pattern = self.config.input_path / 'mixer_output_*.csv'
         files = sorted(glob.glob(str(pattern)))
         
         if not files:
             raise FileNotFoundError(f"No CSV files found in {self.config.input_path}")
         
-        # Filter files
-        files_to_read = []
+        # Extract all frame numbers
+        all_frames = []
         for file in files:
             frame_num = self.extract_frame_number(os.path.basename(file))
+            all_frames.append((file, frame_num))
+        
+        # Sort by frame number
+        all_frames.sort(key=lambda x: x[1])
+        
+        # Calculate steady state portion
+        total_frames = len(all_frames)
+        start_idx = int(total_frames * (1 - self.config.steady_state_fraction))
+        steady_state_frames = all_frames[start_idx:]
+        
+        print(f"  ✓ Total frames found: {total_frames}")
+        print(f"  ✓ Using last {self.config.steady_state_fraction:.0%} ({len(steady_state_frames)} frames) for steady state")
+        
+        # Filter by frame_skip
+        files_to_read = []
+        for file, frame_num in steady_state_frames:
             if frame_num % self.config.frame_skip == 0:
                 files_to_read.append((file, frame_num))
         
@@ -158,10 +225,10 @@ class MixerDataProcessor:
         return pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
     
     def load_data(self, max_files: Optional[int] = None) -> pd.DataFrame:
-        """Load mixer data"""
+        """Load mixer data (steady state only)"""
         files_to_read = self.get_files_to_read(max_files)
         
-        print(f"  ✓ Found {len(files_to_read)} files to process")
+        print(f"  ✓ Will process {len(files_to_read)} files")
         print(f"  ✓ Reading every {self.config.frame_skip} frames")
         print("-" * 40)
         
@@ -324,7 +391,7 @@ class StatisticalAnalyzer:
                 'min': self.df['v_total'].min(),
                 'median': self.df['v_total'].median()
             },
-            'particle_sizes': sorted(self.df['r'].unique()),
+            'particle_sizes': sorted(self.df['r'].unique()) if 'r' in self.df.columns else [],
             'spatial_extent': {
                 'x_range': (self.df['X'].min(), self.df['X'].max()),
                 'y_range': (self.df['Y'].min(), self.df['Y'].max()),
@@ -332,259 +399,218 @@ class StatisticalAnalyzer:
             }
         }
 
-# ======================== Scientific Style Plotting Class ========================
-class PlotGenerator:
-    """Generate scientific publication style analysis plots"""
-    def __init__(self, config: Config):
-        self.config = config
+# ======================== Multi-Directory Comparison Class ========================
+class MultiDirectoryComparison:
+    """Handle comparison across multiple directories"""
+    def __init__(self, multi_config: MultiDirectoryConfig):
+        self.multi_config = multi_config
+        self.results = {}
+        
+    def process_all_directories(self):
+        """Process all matching directories"""
+        print("\n" + "=" * 60)
+        print("MULTI-DIRECTORY ANALYSIS")
+        print("=" * 60)
+        print(f"Found {len(self.multi_config.directories)} directories to process")
+        
+        for dir_info in self.multi_config.directories:
+            print(f"\n{'='*60}")
+            print(f"Processing: {dir_info['name']}")
+            print(f"  Scale Factor: f{dir_info['scale_factor']}")
+            print(f"  Surface Energy: se{dir_info['surface_energy']}")
+            print('='*60)
+            
+            try:
+                # Create config for this directory
+                config = Config(
+                    scale_factor=dir_info['scale_factor'],
+                    surface_energy=dir_info['surface_energy'],
+                    base_path=self.multi_config.base_path,
+                    enable_plotting=self.multi_config.enable_plotting,
+                    steady_state_fraction=self.multi_config.steady_state_fraction
+                )
+                
+                # Process directory
+                processor = MixerDataProcessor(config)
+                df = processor.load_data()
+                processor.process_velocities()
+                processor.process_angles()
+                
+                # Statistical analysis
+                analyzer = StatisticalAnalyzer(processor.df)
+                
+                # Store results
+                self.results[dir_info['name']] = {
+                    'config': config,
+                    'dir_info': dir_info,
+                    'df': processor.df,
+                    'analyzer': analyzer,
+                    'angle_stats': analyzer.compute_angle_statistics(),
+                    'radial_stats': analyzer.compute_radial_statistics(),
+                    'particle_stats': analyzer.compute_particle_statistics(),
+                    'pdf_data': analyzer.compute_velocity_pdf(),
+                    'summary': analyzer.get_summary_statistics()
+                }
+                
+                # Save individual results
+                self.save_individual_results(dir_info['name'])
+                
+            except Exception as e:
+                print(f"  ✗ Error processing {dir_info['name']}: {e}")
+                continue
+        
+        # Generate comparison results
+        if len(self.results) > 1:
+            self.generate_comparison()
     
-    def apply_scientific_style(self, ax):
-        """Apply scientific paper style to axes"""
-        # Axis frame settings
-        for spine in ax.spines.values():
-            spine.set_linewidth(1.8)
-            spine.set_color('black')
+    def save_individual_results(self, dir_name: str):
+        """Save results for individual directory"""
+        result = self.results[dir_name]
+        config = result['config']
         
-        # Major tick settings
-        ax.tick_params(axis='both', which='major', 
-                      labelsize=14, width=1.2, length=5,
-                      direction='in', top=True, right=True)
+        # Save statistical results
+        result['angle_stats'].to_csv(config.output_path / f'AngleStats_f{config.scale_factor}.csv')
+        result['radial_stats'].to_csv(config.output_path / f'RadialStats_f{config.scale_factor}.csv')
+        result['particle_stats'].to_csv(config.output_path / f'ParticleStats_f{config.scale_factor}.csv')
+        result['pdf_data'].to_csv(config.output_path / f'PDF_f{config.scale_factor}.csv', index=False)
         
-        # Minor tick settings
-        ax.tick_params(axis='both', which='minor', 
-                      width=0.6, length=2.4,
-                      direction='in', top=True, right=True)
+        # Save summary
+        with open(config.output_path / f'Summary_f{config.scale_factor}.txt', 'w') as f:
+            summary = result['summary']
+            f.write(f"SUP Mixer Analysis Summary - Scale Factor f{config.scale_factor}\n")
+            f.write(f"Surface Energy: se{config.surface_energy}\n")
+            f.write("=" * 60 + "\n\n")
+            f.write(f"Total particles analyzed: {summary['total_particles']}\n")
+            f.write(f"Number of frames: {summary['num_frames']}\n")
+            f.write(f"Time range: {summary['time_range'][0]:.6f} - {summary['time_range'][1]:.6f} seconds\n")
+            f.write(f"\nVelocity Statistics:\n")
+            f.write(f"  Mean:   {summary['velocity_stats']['mean']:.4f} m/s\n")
+            f.write(f"  Std:    {summary['velocity_stats']['std']:.4f} m/s\n")
+            f.write(f"  Max:    {summary['velocity_stats']['max']:.4f} m/s\n")
+            f.write(f"  Min:    {summary['velocity_stats']['min']:.4f} m/s\n")
+            f.write(f"  Median: {summary['velocity_stats']['median']:.4f} m/s\n")
         
-        # Grid settings
-        ax.grid(True, which='major', alpha=0.15, linewidth=0.8, 
-               linestyle='-', color='gray', zorder=0)
-        ax.grid(True, which='minor', alpha=0.08, linewidth=0.5, 
-               linestyle='--', color='gray', zorder=0)
-        ax.minorticks_on()
-        
-        # Ensure data is above grid
-        ax.set_axisbelow(True)
+        print(f"  ✓ Results saved to: {config.output_path}")
     
-    def plot_velocity_pdf(self, pdf_data: pd.DataFrame) -> None:
-        """Plot velocity probability density distribution - Scientific style"""
+    def generate_comparison(self):
+        """Generate comparison plots and summary"""
+        print("\n" + "=" * 60)
+        print("GENERATING COMPARISON ANALYSIS")
+        print("=" * 60)
+        
+        # Create comparison directory
+        if self.multi_config.filter_cohesion:
+            comparison_dir = Path(f'sta_results/se{self.multi_config.filter_cohesion}/comparison/')
+        else:
+            comparison_dir = Path('sta_results/comparison/')
+        comparison_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Collect comparison data
+        comparison_data = []
+        for name, result in self.results.items():
+            summary = result['summary']
+            comparison_data.append({
+                'Directory': name,
+                'Scale_Factor': result['dir_info']['scale_factor'],
+                'Surface_Energy': result['dir_info']['surface_energy'],
+                'Mean_Velocity': summary['velocity_stats']['mean'],
+                'Std_Velocity': summary['velocity_stats']['std'],
+                'Max_Velocity': summary['velocity_stats']['max'],
+                'Min_Velocity': summary['velocity_stats']['min'],
+                'Median_Velocity': summary['velocity_stats']['median'],
+                'Total_Particles': summary['total_particles'],
+                'Num_Frames': summary['num_frames']
+            })
+        
+        # Save comparison CSV
+        comparison_df = pd.DataFrame(comparison_data)
+        comparison_df = comparison_df.sort_values(['Scale_Factor', 'Surface_Energy'])
+        comparison_df.to_csv(comparison_dir / 'velocity_comparison.csv', index=False)
+        print(f"  ✓ Comparison data saved to: {comparison_dir / 'velocity_comparison.csv'}")
+        
+        # Generate comparison plots if enabled
+        if self.multi_config.enable_plotting:
+            self.plot_comparison(comparison_dir)
+    
+    def plot_comparison(self, output_dir: Path):
+        """Generate comparison plots"""
+        # Set up scientific style
+        plt.rcParams.update({
+            'font.family': 'serif',
+            'font.size': 12,
+            'axes.linewidth': 1.8,
+            'xtick.major.width': 1.2,
+            'ytick.major.width': 1.2
+        })
+        
+        # Plot 1: PDF Comparison
         fig, ax = plt.subplots(figsize=(14, 8))
         
-        # Plot PDF curve
-        line = ax.plot(pdf_data['velocity_center'], 
-                      pdf_data['probability_density'], 
-                      '-', linewidth=2.4, color='#0066CC',
-                      label=f'SUP Scale Factor f{self.config.scale_factor}',
-                      zorder=5)[0]
+        colors = plt.cm.viridis(np.linspace(0, 0.9, len(self.results)))
         
-        # Fill area under curve
-        ax.fill_between(pdf_data['velocity_center'], 
-                       pdf_data['probability_density'],
-                       alpha=0.15, color='#0066CC', zorder=3)
+        for (name, result), color in zip(self.results.items(), colors):
+            pdf_data = result['pdf_data']
+            dir_info = result['dir_info']
+            label = f"f{dir_info['scale_factor']} (se{dir_info['surface_energy']})"
+            
+            ax.plot(pdf_data['velocity_center'], pdf_data['probability_density'],
+                   '-', linewidth=2.4, color=color, label=label, alpha=0.8)
+            
+            # Fill area with transparency
+            ax.fill_between(pdf_data['velocity_center'], pdf_data['probability_density'],
+                          alpha=0.1, color=color)
         
-        # Mark peak
-        max_idx = pdf_data['probability_density'].idxmax()
-        max_v = pdf_data.loc[max_idx, 'velocity_center']
-        max_p = pdf_data.loc[max_idx, 'probability_density']
-        
-        ax.scatter([max_v], [max_p], s=120, color='red', 
-                  marker='o', zorder=6, edgecolors='darkred', linewidth=1.5)
-        
-        # Peak annotation
-        ax.annotate(f'Peak: v={max_v:.3f} m/s\nP={max_p:.3f}',
-                   xy=(max_v, max_p), xytext=(max_v + 0.15, max_p),
-                   fontsize=11, fontweight='bold',
-                   bbox=dict(boxstyle='round,pad=0.3', 
-                            facecolor='white', edgecolor='black', linewidth=1),
-                   arrowprops=dict(arrowstyle='->', color='black', lw=1.2),
-                   zorder=7)
-        
-        # Statistics box
-        mean_v = np.sum(pdf_data['velocity_center'] * pdf_data['probability_density'] * 
-                       np.diff(np.append(pdf_data['velocity_center'], pdf_data['velocity_center'].iloc[-1])))
-        
-        stats_text = (f'Velocity PDF Statistics:\n'
-                     f'{"─" * 30}\n'
-                     f'Peak Velocity:  {max_v:.3f} m/s\n'
-                     f'Peak Density:   {max_p:.3f}\n'
-                     f'Mean Velocity:  {mean_v:.3f} m/s\n'
-                     f'Scale Factor:   f{self.config.scale_factor}')
-        
-        ax.text(0.98, 0.02, stats_text, transform=ax.transAxes,
-               verticalalignment='bottom', horizontalalignment='right',
-               fontsize=10, fontweight='normal', fontfamily='monospace',
-               bbox=dict(boxstyle='square,pad=0.5', facecolor='white',
-                        edgecolor='black', linewidth=1.2),
-               zorder=10)
-        
-        # Axis labels
-        ax.set_xlabel('Velocity [m/s]', fontsize=17, fontweight='bold')
-        ax.set_ylabel('Probability Density', fontsize=17, fontweight='bold')
-        ax.set_title(f'(a) Velocity Probability Density Function - SUP f{self.config.scale_factor}', 
-                    fontsize=19, fontweight='bold', pad=15)
-        
-        # Set axis ranges
-        ax.set_xlim(0, pdf_data['velocity_center'].max() * 1.05)
-        ax.set_ylim(0, pdf_data['probability_density'].max() * 1.1)
-        
-        # Apply scientific style
-        self.apply_scientific_style(ax)
-        
-        # Legend
-        legend = ax.legend(loc='upper right', frameon=True, fancybox=False,
-                          shadow=False, framealpha=1.0, edgecolor='black',
-                          facecolor='white', fontsize=12)
-        legend.get_frame().set_linewidth(1.2)
-        legend.set_zorder(10)
+        ax.set_xlabel('Velocity [m/s]', fontsize=14, fontweight='bold')
+        ax.set_ylabel('Probability Density', fontsize=14, fontweight='bold')
+        ax.set_title('Velocity PDF Comparison - Multiple Configurations', 
+                    fontsize=16, fontweight='bold')
+        ax.legend(loc='upper right', frameon=True, fancybox=False,
+                 edgecolor='black', fontsize=10)
+        ax.grid(True, alpha=0.3, linewidth=0.8)
         
         plt.tight_layout()
-        plt.savefig(self.config.output_path / f'PDF_f{self.config.scale_factor}.png', 
-                   dpi=self.config.plot_dpi, bbox_inches='tight')
-        if self.config.plot_show:
-            plt.show()
+        plt.savefig(output_dir / 'PDF_comparison.png', dpi=300, bbox_inches='tight')
         plt.close()
-    
-    def plot_radial_velocity(self, radial_stats: pd.DataFrame) -> None:
-        """Plot radial velocity distribution - Scientific style"""
-        fig, ax = plt.subplots(figsize=(14, 8))
         
-        radial_means = radial_stats[('v_total', 'mean')]
-        radial_stds = radial_stats[('v_total', 'std')]
-        radial_distances = radial_means.index * 1000  # Convert to mm
+        # Plot 2: Mean Velocity Bar Chart
+        fig, ax = plt.subplots(figsize=(12, 8))
         
-        # Main curve with markers
-        line = ax.plot(radial_distances, radial_means.values, 
-                      '-', linewidth=2.4, color='#CC0000',
-                      label='Mean Velocity', marker='o', markersize=6,
-                      markerfacecolor='white', markeredgecolor='#CC0000',
-                      markeredgewidth=1.5, zorder=5)[0]
+        comparison_data = []
+        for name, result in self.results.items():
+            summary = result['summary']
+            dir_info = result['dir_info']
+            comparison_data.append({
+                'label': f"f{dir_info['scale_factor']}\nse{dir_info['surface_energy']}",
+                'mean': summary['velocity_stats']['mean'],
+                'std': summary['velocity_stats']['std']
+            })
         
-        # Error band
-        ax.fill_between(radial_distances, 
-                       radial_means.values - radial_stds.values,
-                       radial_means.values + radial_stds.values,
-                       alpha=0.2, color='#CC0000', 
-                       label='±1σ', zorder=3)
+        x_pos = np.arange(len(comparison_data))
+        means = [d['mean'] for d in comparison_data]
+        stds = [d['std'] for d in comparison_data]
+        labels = [d['label'] for d in comparison_data]
         
-        # Mark key points
-        max_idx = radial_means.idxmax()
-        min_idx = radial_means.idxmin()
+        bars = ax.bar(x_pos, means, yerr=stds, capsize=5, 
+                     color=colors, edgecolor='black', linewidth=1.5, alpha=0.8)
         
-        # Annotate maximum
-        ax.annotate(f'Max: {radial_means[max_idx]:.3f} m/s\n@ {max_idx*1000:.1f} mm',
-                   xy=(max_idx*1000, radial_means[max_idx]),
-                   xytext=(max_idx*1000, radial_means[max_idx] + 0.05),
-                   fontsize=10, fontweight='bold',
-                   bbox=dict(boxstyle='round,pad=0.3', 
-                            facecolor='yellow', alpha=0.8, edgecolor='black'),
-                   ha='center', va='bottom', zorder=6)
+        ax.set_xlabel('Configuration', fontsize=14, fontweight='bold')
+        ax.set_ylabel('Mean Velocity [m/s]', fontsize=14, fontweight='bold')
+        ax.set_title('Mean Velocity Comparison', fontsize=16, fontweight='bold')
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(labels)
+        ax.grid(True, axis='y', alpha=0.3, linewidth=0.8)
         
-        # Reference line (mixer radius)
-        mixer_radius = 25  # mm
-        ax.axvline(x=mixer_radius, color='green', linestyle='--', 
-                  linewidth=1.5, alpha=0.7, label=f'Mixer Radius ({mixer_radius} mm)')
-        
-        # Statistics box
-        stats_text = (f'Radial Velocity Statistics:\n'
-                     f'{"─" * 30}\n'
-                     f'Maximum:  {radial_means.max():.3f} m/s @ {radial_means.idxmax()*1000:.1f} mm\n'
-                     f'Minimum:  {radial_means.min():.3f} m/s @ {radial_means.idxmin()*1000:.1f} mm\n'
-                     f'Range:    {radial_means.max() - radial_means.min():.3f} m/s\n'
-                     f'Samples:  {len(radial_means)} bins')
-        
-        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
-               verticalalignment='top', horizontalalignment='left',
-               fontsize=10, fontweight='normal', fontfamily='monospace',
-               bbox=dict(boxstyle='square,pad=0.5', facecolor='white',
-                        edgecolor='black', linewidth=1.2),
-               zorder=10)
-        
-        # Axis labels
-        ax.set_xlabel('Radial Distance [mm]', fontsize=17, fontweight='bold')
-        ax.set_ylabel('Mean Velocity [m/s]', fontsize=17, fontweight='bold')
-        ax.set_title(f'(b) Radial Velocity Distribution - SUP f{self.config.scale_factor}', 
-                    fontsize=19, fontweight='bold', pad=15)
-        
-        # Apply scientific style
-        self.apply_scientific_style(ax)
-        
-        # Set axis ranges
-        ax.set_xlim(radial_distances.min() * 0.95, radial_distances.max() * 1.05)
-        ax.set_ylim(0, radial_means.max() * 1.15)
-        
-        # Legend
-        legend = ax.legend(loc='upper right', frameon=True, fancybox=False,
-                          shadow=False, framealpha=1.0, edgecolor='black',
-                          facecolor='white', fontsize=12)
-        legend.get_frame().set_linewidth(1.2)
-        legend.set_zorder(10)
+        # Add value labels on bars
+        for bar, mean, std in zip(bars, means, stds):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height + std,
+                   f'{mean:.3f}', ha='center', va='bottom', fontsize=10)
         
         plt.tight_layout()
-        plt.savefig(self.config.output_path / f'RadialVelocity_f{self.config.scale_factor}.png',
-                   dpi=self.config.plot_dpi, bbox_inches='tight')
-        if self.config.plot_show:
-            plt.show()
+        plt.savefig(output_dir / 'mean_velocity_comparison.png', dpi=300, bbox_inches='tight')
         plt.close()
-    
-    def plot_combined_analysis(self, pdf_data, radial_stats, angle_stats):
-        """Create combined analysis plot - 2x2 scientific layout"""
-        fig = plt.figure(figsize=(18, 14))
         
-        # Create 2x2 subplot layout
-        gs = fig.add_gridspec(2, 2, hspace=0.25, wspace=0.25)
-        ax1 = fig.add_subplot(gs[0, 0])
-        ax2 = fig.add_subplot(gs[0, 1])
-        ax3 = fig.add_subplot(gs[1, 0])
-        ax4 = fig.add_subplot(gs[1, 1])
-        
-        # ====== Panel 1: PDF ======
-        ax1.plot(pdf_data['velocity_center'], pdf_data['probability_density'],
-                '-', linewidth=2.4, color='#0066CC')
-        ax1.fill_between(pdf_data['velocity_center'], pdf_data['probability_density'],
-                        alpha=0.15, color='#0066CC')
-        ax1.set_xlabel('Velocity [m/s]', fontsize=14, fontweight='bold')
-        ax1.set_ylabel('Probability Density', fontsize=14, fontweight='bold')
-        ax1.set_title('(1) Velocity PDF', fontsize=15, fontweight='bold')
-        self.apply_scientific_style(ax1)
-        
-        # ====== Panel 2: Radial ======
-        radial_means = radial_stats[('v_total', 'mean')]
-        ax2.plot(radial_means.index * 1000, radial_means.values,
-                '-o', linewidth=2.4, color='#CC0000', markersize=4)
-        ax2.set_xlabel('Radial Distance [mm]', fontsize=14, fontweight='bold')
-        ax2.set_ylabel('Mean Velocity [m/s]', fontsize=14, fontweight='bold')
-        ax2.set_title('(2) Radial Distribution', fontsize=15, fontweight='bold')
-        self.apply_scientific_style(ax2)
-        
-        # ====== Panel 3: Angular ======
-        angles = (angle_stats.index - 1) * 10 + 5
-        ax3.plot(angles, angle_stats[('v_total', 'mean')],
-                '-s', linewidth=2.4, color='#0066CC', markersize=4)
-        ax3.set_xlabel('Angle [degrees]', fontsize=14, fontweight='bold')
-        ax3.set_ylabel('Mean Velocity [m/s]', fontsize=14, fontweight='bold')
-        ax3.set_title('(3) Angular Distribution', fontsize=15, fontweight='bold')
-        ax3.set_xlim(0, 360)
-        self.apply_scientific_style(ax3)
-        
-        # ====== Panel 4: Vertical Velocity ======
-        ax4.plot(angles, angle_stats[('v_z', 'mean')],
-                '-o', linewidth=2.4, color='#00AA44', markersize=4)
-        ax4.axhline(y=0, color='black', linestyle='--', linewidth=1.5, alpha=0.7)
-        ax4.set_xlabel('Angle [degrees]', fontsize=14, fontweight='bold')
-        ax4.set_ylabel('Vertical Velocity [m/s]', fontsize=14, fontweight='bold')
-        ax4.set_title('(4) Vertical Flow Pattern', fontsize=15, fontweight='bold')
-        ax4.set_xlim(0, 360)
-        self.apply_scientific_style(ax4)
-        
-        # Overall title
-        fig.suptitle(f'DEM Mixer Comprehensive Analysis - SUP Scale Factor f{self.config.scale_factor}',
-                    fontsize=20, fontweight='bold')
-        
-        plt.tight_layout(rect=[0, 0.02, 1, 0.96])
-        plt.savefig(self.config.output_path / f'Combined_Analysis_f{self.config.scale_factor}.png',
-                   dpi=300, bbox_inches='tight')
-        if self.config.plot_show:
-            plt.show()
-        plt.close()
+        print(f"  ✓ Comparison plots saved to: {output_dir}")
 
 # ======================== Print Functions ========================
 def print_header(title: str, width: int = 60):
@@ -598,211 +624,70 @@ def print_section(title: str, width: int = 40):
     print("\n" + title)
     print("-" * width)
 
-def print_statistics_summary(summary: dict, config: Config):
-    """Print detailed statistics summary"""
-    print_header("DATA STATISTICS SUMMARY")
-    
-    # Basic information
-    print_section("Basic Information")
-    print(f"  Scale Factor:        f{config.scale_factor}")
-    print(f"  Total Particles:     {summary['total_particles']:,}")
-    print(f"  Number of Frames:    {summary['num_frames']}")
-    print(f"  Time Range:          {summary['time_range'][0]:.6f} - {summary['time_range'][1]:.6f} seconds")
-    print(f"  Particle Sizes:      {summary['particle_sizes']}")
-    
-    # Velocity statistics
-    print_section("Velocity Statistics")
-    v_stats = summary['velocity_stats']
-    print(f"  Minimum:             {v_stats['min']:.6f} m/s")
-    print(f"  Maximum:             {v_stats['max']:.6f} m/s")
-    print(f"  Mean:                {v_stats['mean']:.6f} m/s")
-    print(f"  Standard Deviation:  {v_stats['std']:.6f} m/s")
-    print(f"  Median:              {v_stats['median']:.6f} m/s")
-    
-    # Spatial extent
-    print_section("Spatial Extent")
-    s_ext = summary['spatial_extent']
-    print(f"  X Range: [{s_ext['x_range'][0]:.4f}, {s_ext['x_range'][1]:.4f}] m")
-    print(f"  Y Range: [{s_ext['y_range'][0]:.4f}, {s_ext['y_range'][1]:.4f}] m")
-    print(f"  Z Range: [{s_ext['z_range'][0]:.4f}, {s_ext['z_range'][1]:.4f}] m")
-
 # ======================== Main Program ========================
-def main(enable_plotting: bool = True, plot_show: bool = False, 
-         scale_factor: int = 4, interactive: bool = True):
+def main():
     """
-    Main program
-    
-    Parameters:
-        enable_plotting: Whether to generate plots
-        plot_show: Whether to show plot windows
-        scale_factor: SUP scaling factor
-        interactive: Whether to run in interactive mode
+    Main program for multi-directory analysis
     """
-    # Initialize configuration
-    config = Config(scale_factor=scale_factor, enable_plotting=enable_plotting)
-    config.plot_show = plot_show
+    # ==================== Configurable Parameters ====================
+    base_path = "build"  # Search directory, can be "build" or other path
+    filter_cohesion = "001"  # Only process cohesion=0 data, set to None for all
+    use_interpolation = False  # Whether to use interpolation
+    enable_plotting = True  # Generate plots
+    steady_state_fraction = 0.5  # Use last 50% of data (can be 0.33 for last 1/3)
     
-    print_header(f"SUP MIXER VELOCITY DISTRIBUTION ANALYSIS - SCALE FACTOR f{scale_factor}")
-    
+    # ==================== Run Analysis ====================
+    print_header("SUP MIXER MULTI-DIRECTORY VELOCITY ANALYSIS")
     start_time = datetime.datetime.now()
     
     try:
-        # 1. Data loading and processing
-        print_section("1. Loading and Processing Data")
-        processor = MixerDataProcessor(config)
-        df = processor.load_data()
+        # Initialize multi-directory configuration
+        multi_config = MultiDirectoryConfig(
+            base_path=base_path,
+            filter_cohesion=filter_cohesion,
+            use_interpolation=use_interpolation,
+            enable_plotting=enable_plotting,
+            steady_state_fraction=steady_state_fraction
+        )
         
-        # 2. Calculate velocities
-        print_section("2. Processing Velocities")
-        velocity_start = datetime.datetime.now()
-        processor.process_velocities()
-        velocity_time = (datetime.datetime.now() - velocity_start).total_seconds()
-        print(f"  ⚡ Velocity processing time: {velocity_time:.3f} seconds")
+        if not multi_config.directories:
+            print("✗ No matching directories found!")
+            print(f"  Searched for: SUPMixerOutput_f*se{filter_cohesion if filter_cohesion else '*'}")
+            print(f"  In path: {base_path}")
+            return
         
-        # 3. Calculate angles
-        print_section("3. Processing Angles")
-        processor.process_angles()
+        print(f"Configuration:")
+        print(f"  Base path: {base_path}")
+        print(f"  Filter cohesion: {filter_cohesion if filter_cohesion else 'None (process all)'}")
+        print(f"  Steady state fraction: {steady_state_fraction:.0%} (using last {steady_state_fraction:.0%} of data)")
+        print(f"  Enable plotting: {enable_plotting}")
+        print(f"  Use interpolation: {use_interpolation}")
+        print(f"\nFound {len(multi_config.directories)} directories to process:")
+        for d in multi_config.directories:
+            print(f"  - {d['name']}")
         
-        # 4. Statistical analysis
-        print_section("4. Computing Statistics")
-        analyzer = StatisticalAnalyzer(processor.df)
-        
-        print("  ✓ Computing angle statistics...")
-        angle_stats = analyzer.compute_angle_statistics()
-        
-        print("  ✓ Computing radial statistics...")
-        radial_stats = analyzer.compute_radial_statistics()
-        
-        print("  ✓ Computing particle statistics...")
-        particle_stats = analyzer.compute_particle_statistics()
-        
-        print("  ✓ Computing velocity PDF...")
-        pdf_data = analyzer.compute_velocity_pdf()
-        
-        print("  ✓ Generating summary statistics...")
-        summary = analyzer.get_summary_statistics()
-        
-        # 5. Save results
-        print_section("5. Saving Results")
-        
-        # Save processed data (sampled)
-        sample_size = min(config.max_sample_size, len(processor.df))
-        df_sample = processor.df.sample(n=sample_size) if len(processor.df) > sample_size else processor.df
-        
-        output_file = config.output_path / f'RAW_f{config.scale_factor}_processed.csv.gz'
-        df_sample.to_csv(output_file, index=False, compression='gzip')
-        print(f"  ✓ Processed data saved: {output_file}")
-        
-        # Save statistical results
-        angle_stats.to_csv(config.output_path / f'AngleStats_f{config.scale_factor}.csv')
-        print(f"  ✓ Angle statistics saved")
-        
-        radial_stats.to_csv(config.output_path / f'RadialStats_f{config.scale_factor}.csv')
-        print(f"  ✓ Radial statistics saved")
-        
-        particle_stats.to_csv(config.output_path / f'ParticleStats_f{config.scale_factor}.csv')
-        print(f"  ✓ Particle statistics saved")
-        
-        pdf_data.to_csv(config.output_path / f'PDF_f{config.scale_factor}.csv', index=False)
-        print(f"  ✓ PDF data saved")
-        
-        # Save summary
-        with open(config.output_path / f'Summary_f{config.scale_factor}.txt', 'w') as f:
-            f.write(f"SUP Mixer Analysis Summary - Scale Factor f{config.scale_factor}\n")
-            f.write("=" * 60 + "\n\n")
-            f.write(f"Total particles analyzed: {summary['total_particles']}\n")
-            f.write(f"Number of frames: {summary['num_frames']}\n")
-            f.write(f"Time range: {summary['time_range'][0]:.6f} - {summary['time_range'][1]:.6f} seconds\n")
-            f.write(f"\nVelocity Statistics:\n")
-            f.write(f"  Mean:   {summary['velocity_stats']['mean']:.4f} m/s\n")
-            f.write(f"  Std:    {summary['velocity_stats']['std']:.4f} m/s\n")
-            f.write(f"  Max:    {summary['velocity_stats']['max']:.4f} m/s\n")
-            f.write(f"  Min:    {summary['velocity_stats']['min']:.4f} m/s\n")
-            f.write(f"  Median: {summary['velocity_stats']['median']:.4f} m/s\n")
-            f.write(f"\nParticle sizes: {summary['particle_sizes']}\n")
-        print(f"  ✓ Summary report saved")
-        
-        # 6. Generate plots (optional)
-        if config.enable_plotting:
-            print_section("6. Generating Plots")
-            
-            if interactive:
-                print("\nPlot Options:")
-                print("1. Individual plots (PDF, Radial, Angular)")
-                print("2. Combined analysis plot (2x2 layout)")
-                print("3. All plots")
-                print("=" * 40)
-                choice = input("Select option (1/2/3) [default: 3]: ").strip() or "3"
-            else:
-                choice = "3"  # Generate all plots in non-interactive mode
-            
-            plotter = PlotGenerator(config)
-            
-            if choice in ["1", "3"]:
-                print("  ✓ Generating velocity PDF plot...")
-                plotter.plot_velocity_pdf(pdf_data)
-                
-                print("  ✓ Generating radial velocity plot...")
-                plotter.plot_radial_velocity(radial_stats)
-            
-            if choice in ["2", "3"]:
-                print("  ✓ Generating combined analysis plot...")
-                plotter.plot_combined_analysis(pdf_data, radial_stats, angle_stats)
-            
-            print(f"  ✓ All plots saved to: {config.output_path}")
-        else:
-            print_section("6. Plotting")
-            print("  ⚠ Plotting disabled (set ENABLE_PLOTTING=True to generate plots)")
-        
-        # 7. Print analysis summary
-        print_statistics_summary(summary, config)
+        # Process all directories
+        comparison = MultiDirectoryComparison(multi_config)
+        comparison.process_all_directories()
         
         # Performance summary
-        print_header("PERFORMANCE SUMMARY")
+        print_header("ANALYSIS COMPLETE")
         elapsed = (datetime.datetime.now() - start_time).total_seconds()
         print(f"  Total Processing Time: {elapsed:.2f} seconds")
+        print(f"  Directories Processed: {len(comparison.results)}")
         
-        if 'velocity' in processor.df.columns:
-            print(f"  ✓ Pre-calculated velocity used (saved time)")
+        if filter_cohesion:
+            print(f"  Results saved to: sta_results/se{filter_cohesion}/")
+        else:
+            print(f"  Results saved to: sta_results/")
         
-        memory_usage_mb = processor.df.memory_usage(deep=True).sum() / 1024 / 1024
-        print(f"  Peak Memory Usage:     {memory_usage_mb:.2f} MB")
-        print(f"  Output Directory:      {config.output_path}")
-        
-        print("\n" + "=" * 60)
-        print("✓ ANALYSIS COMPLETE!")
+        print("\n✓ All analyses complete!")
         print("=" * 60)
         
-        # Ask if user wants to save plots
-        if interactive and config.enable_plotting and config.plot_show:
-            save_option = input("\nSave additional high-resolution copies? (y/n) [default: n]: ").strip().lower()
-            if save_option == 'y':
-                print("Saving high-resolution plots (600 DPI)...")
-                config.plot_dpi = 600
-                plotter = PlotGenerator(config)
-                plotter.plot_velocity_pdf(pdf_data)
-                plotter.plot_radial_velocity(radial_stats)
-                plotter.plot_combined_analysis(pdf_data, radial_stats, angle_stats)
-                print("✓ High-resolution plots saved")
-        
-    except FileNotFoundError as e:
-        print(f"\n✗ ERROR: {e}")
-        print("Please check that the input directory exists and contains CSV files.")
     except Exception as e:
         print(f"\n✗ ERROR: {e}")
         import traceback
         traceback.print_exc()
 
 if __name__ == "__main__":
-    # ==================== Configuration Options ====================
-    # Set running parameters here
-    ENABLE_PLOTTING = True   # Generate plots (True/False)
-    SHOW_PLOTS = True      # Show plot windows (True/False), False only saves files
-    SCALE_FACTOR = 4        # SUP scaling factor
-    INTERACTIVE = True      # Run in interactive mode (True/False)
-    
-    # Run main program
-    main(enable_plotting=ENABLE_PLOTTING, 
-         plot_show=SHOW_PLOTS,
-         scale_factor=SCALE_FACTOR,
-         interactive=INTERACTIVE)
+    main()

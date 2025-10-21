@@ -1,4 +1,5 @@
-// 基于 FullHertzianForceModel.cu 修改，使用SUP模型 + CDT滚动阻力 + 论文切向力模型
+// 基于 FullHertzianForceModel.cu 修改，使用SUP模型
+// JKR/Hertz模型 + 论文切向力模型 + CDT滚动阻力
 // 参考文献：Hu et al., Powder Technology 438 (2024)
 
 // VERSION_250603: 移除了内部时间步缩放
@@ -7,7 +8,7 @@
 // VERSION_250701：修改JKR模型为更简单的计算
 // VERSION_250825：力的缩放指数可调节
 // VERSION_250826: 修改了滚动阻力和切向力的计算公式
-// VERSION_251020: 调整JKR对摩擦力产生贡献
+// VERSION_251020: 修正JKR力符号和摩擦力计算
 
 // 获取缩放因子
 float l = scale_factor_l[bodyAMatType]; // SUP缩放因子
@@ -41,9 +42,9 @@ if (overlap_s > 0) {
             float E_B_orig = E[bodyBMatType];
             float nu_B_orig = nu[bodyBMatType];
             matProxy2ContactParam<float>(E_cnt, G_cnt, E_A_orig, nu_A_orig, E_B_orig, nu_B_orig);
-            CoR_cnt = CoR[bodyAMatType][bodyBMatType];
-            mu_cnt = mu[bodyAMatType][bodyBMatType];
-            Crr_cnt = Crr[bodyAMatType][bodyBMatType];
+            CoR_cnt = CoR[bodyAMatType][bodyBMatType];    // 恢复系数
+            mu_cnt = mu[bodyAMatType][bodyBMatType];      // 摩擦系数
+            Crr_cnt = Crr[bodyAMatType][bodyBMatType];    // 滚动阻力系数
             gamma_surf = Cohesion[bodyAMatType][bodyBMatType];
         }
 
@@ -115,7 +116,7 @@ if (overlap_s > 0) {
             R_star_o = (R_o_A * R_o_B) / (R_o_A + R_o_B);
         }
 
-        float sqrt_Rd_o = sqrtf(overlap_o * R_star_o);
+        float sqrt_Rd_o = sqrtf(fmaxf(overlap_o * R_star_o, 0.0f));
         const float loge_o = (CoR_cnt < DEME_TINY_FLOAT) ? logf(DEME_TINY_FLOAT) : logf(CoR_cnt);
         float beta_o = loge_o / sqrtf(loge_o * loge_o + deme::PI_SQUARED);
 
@@ -135,26 +136,70 @@ if (overlap_s > 0) {
 
         // 时间步缩放
         // float ts_o = ts / l;
-        float ts_o = ts; // 不缩放时间步
+        float ts_o = ts;  // 暂时不缩放时间步
 
-        // ============ 法向力计算（使用SJKR-F模型）============
-        float F_hertz = (4.0f/3.0f) * E_cnt * sqrtf(R_star_o) * powf(overlap_o, 1.5f);
+        // ============ 法向力计算（添加接触半径求解）============
+        // 法向接触力
+        float a = sqrt_Rd_o;    // 默认为 sqrt(R*δ)
+        float rpsFactor = 1.0f; // 固定为1
+        float se = gamma_surf * rpsFactor;
 
-        float F_adhesion = 0.0f;
-        if (gamma_surf > 0.0f) {
-            F_adhesion = 4.0f * sqrtf(deme::PI * gamma_surf * E_cnt * sqrt_Rd_o * sqrt_Rd_o * sqrt_Rd_o);
+        // 求解接触半径 a
+        if (se > 1e-9f && overlap_o > 1e-9f) {
+            double c0_d = (double)(R_star_o * R_star_o * overlap_o * overlap_o);
+            double c1_d = -4.0 * deme::PI * (double)se / (double)E_cnt * (double)(R_star_o * R_star_o);
+            double c2_d = -2.0 * (double)R_star_o * (double)overlap_o;
+            
+            double P = -c2_d*c2_d/12.0 - c0_d;
+            double Q = -c2_d*c2_d*c2_d/108.0 + c0_d*c2_d/3.0 - c1_d*c1_d/8.0;
+            
+            double Uterm1 = fabs(Q*Q/4.0 + P*P*P/27.0);
+            double Uterm2 = sqrt(Uterm1);
+            double U = cbrt(-Q/2.0 + Uterm2);
+            
+            double s;
+            if (fabs(P) > 1e-12 && fabs(U) > 1e-12) {
+                s = -5.0*c2_d/6.0 + U - P/(3.0*U);
+            } else {
+                s = -5.0*c2_d/6.0 - cbrt(Q);
+            }
+            
+            double w = sqrt(fmax(c2_d + 2.0*s, 0.0));
+            
+            if (w > 1e-9) {
+                double lambda = c1_d/(2.0*w);
+                double aterm1 = fabs(w*w - 4.0*(c2_d + s + lambda));
+                double aterm2 = sqrt(aterm1);
+                a = (float)(0.5 * (w + aterm2));
+            }
+            
+            // 限制范围
+            a = fmaxf(0.0f, fminf(2.0f * sqrt_Rd_o, a));
         }
+        
+        // JKR接触力计算
+        float Fn_sJKR = 0.0f;
+        if (se > 0.0f) {
+            float a_cubed = fminf(a * a * a, 1e6f); // 精度保护
+            Fn_sJKR = -4.0f * sqrtf(deme::PI * se * E_cnt * a_cubed); // 负号？？
+        }
+
+        float Fn_hertz = 0.0f;
+        if (R_star_o > 1e-9f) {
+            float a_cubed = fminf(a * a * a, 1e6f);
+            Fn_hertz = (4.0f/3.0f) * E_cnt / R_star_o * a_cubed;
+            Fn_hertz = fminf(Fn_hertz, 1e8f); // 限制最大值
+        }
+
+        float F_normal_mag = Fn_hertz + Fn_sJKR;
 
         // 法向阻尼
         const float Sn_o = 2.0f * E_cnt * sqrt_Rd_o;
         const float k_n_o = deme::TWO_OVER_THREE * Sn_o;
         const float gamma_n_o = deme::TWO_TIMES_SQRT_FIVE_OVER_SIX * beta_o * sqrtf(Sn_o * mass_eff_o);
-
-        // 保存阻尼力用于后续摩擦力计算
-        float F_damping_normal = gamma_n_o * projection_o;
-
-        float F_normal_mag = F_hertz + F_adhesion;
-        F_normal_o_vec = (F_normal_mag + F_damping_normal) * B2A;
+        
+        // 法向力
+        F_normal_o_vec = (F_normal_mag + gamma_n_o * projection_o) * B2A;
         
         if (overlap_o <= 0.0f) {
             F_normal_o_vec = make_float3(0.0f, 0.0f, 0.0f);
@@ -162,37 +207,32 @@ if (overlap_s > 0) {
             delta_time_o = 0.0f;
         }
 
+        // 计算用于摩擦限制的粘附力贡献
+        float Fc_adhesion = 0.0f;
+        if (se > 0.0f) {
+            Fc_adhesion = 3.0f * deme::PI * se * R_star_o;  // [MODIFIED] 计算Fc = 3πγR
+        }
+        
         // ============ 切向力计算（使用论文中的修正Cundall-Strack模型）============
         if (mu_cnt > 0.0f && length(F_normal_o_vec) > DEME_TINY_FLOAT) {
-            // 更新切向位移历史
-            delta_tan_o += (ts_o * vrel_tan_o) / l; // 注意这里除以l是因为vrel_tan_o已经是原始尺度下的速度
+            // 更新切向位移历史（论文方程11中的积分）
+            delta_tan_o += (vrel_tan_o * ts_o) / l;
             
             // 移除法向分量
             const float disp_proj_o = dot(delta_tan_o, B2A);
             delta_tan_o -= disp_proj_o * B2A;
             
-            // 切向刚度和阻尼
+            // 切向刚度和阻尼（论文第3页）
             const float kt_o = 8.0f * G_cnt * sqrt_Rd_o;
             const float gt_o = -deme::TWO_TIMES_SQRT_FIVE_OVER_SIX * beta_o * sqrtf(mass_eff_o * kt_o);
             
-            // 计算切向力
+            // 计算切向力（论文方程11）
             float3 tangent_force_o = -kt_o * delta_tan_o - gt_o * vrel_tan_o;
             const float ft_o = length(tangent_force_o);
             
             if (ft_o > DEME_TINY_FLOAT) {
-                // 计算JKR粘附力对摩擦的贡献
-                // Fc = 3πγR* （在接触面上的粘附力贡献）
-                float Fc_tangential = 0.0f;
-                if (gamma_surf > 0.0f) {
-                    Fc_tangential = 3.0f * deme::PI * gamma_surf * R_star_o;
-                }
-                
-                // 修正的库仑摩擦限制：考虑法向力、阻尼力和粘附力贡献
-                // Ft_friction = μ * |Fn + γn*vn + 2*Fc|
-                // 这里 Fn 已包含 Hertz力和粘附力，F_damping_normal 是阻尼贡献
-                float F_normal_effective = fabsf(F_normal_mag + F_damping_normal + 2.0f * Fc_tangential);
-                const float ft_max_o = F_normal_effective * mu_cnt;
-                
+                // 库仑摩擦限制 - 包含粘附力贡献
+                const float ft_max_o = mu_cnt * fabs(F_normal_mag + gamma_n_o * projection_o + 2.0f * Fc_adhesion);
                 if (ft_o > ft_max_o) {
                     // 达到滑动状态，调整切向力和位移
                     tangent_force_o = (ft_max_o / ft_o) * tangent_force_o;
@@ -234,7 +274,7 @@ if (overlap_s > 0) {
         float l_force = powf(l, (float)index);
         float3 F_total_o_vec = F_normal_o_vec + F_tangential_o_vec + torque_only_force_o;
         
-        force = F_total_o_vec * l_force;
+        force = F_total_o_vec * l_force; 
 
         // ========================================================================
         // SUP 步骤 4：更新缩放后系统中的历史变量
