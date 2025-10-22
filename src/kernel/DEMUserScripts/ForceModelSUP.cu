@@ -9,6 +9,7 @@
 // VERSION_250825：力的缩放指数可调节
 // VERSION_250826: 修改了滚动阻力和切向力的计算公式
 // VERSION_251020: 修正JKR力符号和摩擦力计算
+// VERSION_251021: 调整了摩擦限制中的参数
 
 // 获取缩放因子
 float l = scale_factor_l[bodyAMatType]; // SUP缩放因子
@@ -60,7 +61,11 @@ if (overlap_s > 0) {
         float3 locCPA_o = locCPA_s / l;
         float3 locCPB_o = locCPB_s / l;
 
-        // 旋转速度缩放：ω_O = ω_S * l
+        // 线速度不缩放：v_O = v_S
+        float3 ALinVel_o = ALinVel;
+        float3 BLinVel_o = BLinVel;
+
+        // 角速度缩放：ω_O = ω_S * l
         float3 ARotVel_s = ARotVel;
         float3 BRotVel_s = BRotVel;
         float3 ARotVel_o = ARotVel_s * l;
@@ -130,13 +135,13 @@ if (overlap_s > 0) {
         // ========================================================================
         
         // 计算相对速度
-        const float3 velB2A_o = (ALinVel + rotVelCPA_o_local) - (BLinVel + rotVelCPB_o_local);
+        const float3 velB2A_o = (ALinVel_o + rotVelCPA_o_local) - (BLinVel_o + rotVelCPB_o_local);
         const float projection_o = dot(velB2A_o, B2A);
         float3 vrel_tan_o = velB2A_o - projection_o * B2A;
 
         // 时间步缩放
-        // float ts_o = ts / l;
-        float ts_o = ts;  // 暂时不缩放时间步
+        float ts_s = ts;
+        float ts_o = ts_s;  // 暂时不缩放时间步
 
         // ============ 法向力计算（添加接触半径求解）============
         // 法向接触力
@@ -232,7 +237,9 @@ if (overlap_s > 0) {
             
             if (ft_o > DEME_TINY_FLOAT) {
                 // 库仑摩擦限制 - 包含粘附力贡献
-                const float ft_max_o = mu_cnt * fabs(F_normal_mag + gamma_n_o * projection_o + 2.0f * Fc_adhesion);
+                // 法向阻尼力为gamma_n_o * projection_o，这个值到底要不要是一个问题
+                const float ft_max_o = mu_cnt * fabs(F_normal_mag + 2.0f * Fc_adhesion);
+
                 if (ft_o > ft_max_o) {
                     // 达到滑动状态，调整切向力和位移
                     tangent_force_o = (ft_max_o / ft_o) * tangent_force_o;
