@@ -26,8 +26,9 @@ int main() {
     // =========================================================================
     
     // 全局参数
-    const float my_scale_factor = 2.0f;                      // SUP缩放因子（2）
-    const unsigned int FAMILY_PUSHER = 1;
+    const float my_scale_factor = 1.0f;                      // SUP缩放因子（2）
+    const float particle_cohesion = 0.0f;                  // 颗粒间粘聚力
+    
     const unsigned int FAMILY_PARTICLES = 2;
     // 定义时间步长
     const float step_size = 10e-9; 
@@ -41,7 +42,7 @@ int main() {
     DEMSim.SetOutputFormat(OUTPUT_FORMAT::CSV);
     DEMSim.SetOutputContent({"VEL", "ANG_VEL", "ABS_ACC"}); 
     DEMSim.SetContactOutputFormat(OUTPUT_FORMAT::CSV);
-    DEMSim.SetContactOutputContent({"POINT", "FORCE", "TORQUE"});
+    DEMSim.SetContactOutputContent({"POINT", "FORCE"});
     
     // 求解器基本配置
     DEMSim.SetErrorOutAvgContacts(100);
@@ -60,7 +61,8 @@ int main() {
         {"CoR", 0.5},       // 恢复系数
         {"mu", 0.5},          // 滑动摩擦系数
         {"Crr", 0.03},      // 滚动摩擦系数
-        {"Cohesion", 0.01}        // 粘聚力
+        {"Cohesion", particle_cohesion},        // 粘聚力
+        {"scale_factor_l", my_scale_factor}
     });
 
     // 定义颗粒材料
@@ -70,21 +72,22 @@ int main() {
         {"CoR", 0.5},        
         {"mu", 0.5},
         {"Crr", 0.03},
-        {"Cohesion", 0.01}
+        {"Cohesion", particle_cohesion},
+        {"scale_factor_l", my_scale_factor}
     });
 
     
     // 设置材料相互作用属性 - 颗粒与墙壁
-    DEMSim.SetMaterialPropertyPair("CoR", mat_type_walls, mat_type_particles, 0.5); 
-    DEMSim.SetMaterialPropertyPair("mu", mat_type_walls, mat_type_particles, 0.5);
-    DEMSim.SetMaterialPropertyPair("Crr", mat_type_walls, mat_type_particles, 0.03);
-    DEMSim.SetMaterialPropertyPair("Cohesion", mat_type_walls, mat_type_particles, 0.01);
+    DEMSim.SetMaterialPropertyPair("CoR", mat_type_walls, mat_type_particles, 0.0); 
+    DEMSim.SetMaterialPropertyPair("mu", mat_type_walls, mat_type_particles, 0.0);
+    DEMSim.SetMaterialPropertyPair("Crr", mat_type_walls, mat_type_particles, 0.0);
+    DEMSim.SetMaterialPropertyPair("Cohesion", mat_type_walls, mat_type_particles, 0.0);
  
     // 加载SUP接触力模型
     auto model_SUP = DEMSim.ReadContactForceModel("ForceModelSUP.cu");
-    model_SUP->SetMustHaveMatProp({"E", "nu", "CoR", "mu", "Crr", "Cohesion"});
+    model_SUP->SetMustHaveMatProp({"E", "nu", "CoR", "mu", "Crr", "Cohesion", "scale_factor_l"});
     model_SUP->SetMustPairwiseMatProp({"CoR", "mu", "Crr", "Cohesion"});
-    model_SUP->SetPerContactWildcards({"delta_time", "delta_tan_x", "delta_tan_y", "delta_tan_z", "scale_factor_l"});
+    model_SUP->SetPerContactWildcards({"delta_time", "delta_tan_x", "delta_tan_y", "delta_tan_z"});
 
 
     // =========================================================================
@@ -92,9 +95,9 @@ int main() {
     // =========================================================================
 
     // 颗粒基本参数
-    float particle_diameter = 0.001f * my_scale_factor;                 // 1mm直径
-    float particle_radius = particle_diameter / 2.0f;  // 半径
-    float particle_density = 1000.0;                   // 颗粒密度：1000 kg/m³ 
+    float particle_diameter = 0.001f * my_scale_factor; // 1mm直径
+    float particle_radius = particle_diameter / 2.0f;   // 半径
+    float particle_density = 1000.0;                    // 颗粒密度：1000 kg/m³ 
     float particle_mass = particle_density * (4.0/3.0) * 3.14159265359 * pow(particle_radius, 3); // 颗粒质量
 
     // 定义仿真域
@@ -138,7 +141,7 @@ int main() {
     clump_type = DEMSim.LoadClumpType(clump_mass, MOI, radii, relPos, mat_type_particles);
 
     // 设置两个粒子的位置 - 使它们重叠
-    float overlap_distance = 0.7 * particle_diameter;  // 两个粒子中心距离为0.7倍直径（30%重叠）
+    float overlap_distance = 0.9 * particle_diameter;  // 两个粒子中心距离为0.9倍直径（10%重叠）
     float overlap_amount = particle_diameter - overlap_distance;  // 实际重叠量
     
     float3 pos1 = make_float3(0, 0, 0.01f);  // 第一个粒子位置
@@ -179,9 +182,6 @@ int main() {
     auto clump_tracker = DEMSim.AddClumps(particles);
     DEMSim.UpdateClumps();
     
-    // Set initial conditions for SUP model
-    DEMSim.SetFamilyContactWildcardValueBoth(FAMILY_PARTICLES, "scale_factor_l", my_scale_factor);
-
     // =========================================================================
     // 6. OUTPUT SETUP 
     // =========================================================================
@@ -210,7 +210,7 @@ int main() {
     // 主仿真循环
     for (int frame = 0; frame < 2; frame++) {
         
-        // 每10帧输出一次文件
+        // 每帧输出一次文件
         if (frame % 1 == 0) {
             // 生成输出文件名
             char outputfile[200], unifiedfile[200];
