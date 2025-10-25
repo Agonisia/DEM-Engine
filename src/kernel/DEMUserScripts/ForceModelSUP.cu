@@ -8,6 +8,7 @@
 // VERSION_250825：力的缩放指数可调节
 // VERSION_250826: 修改了滚动阻力和切向力的计算公式
 
+//==========================================================================================================
 // 获取缩放因子
 float l = scale_factor_l[bodyAMatType]; // SUP缩放因子
 float index = 2; // 力的缩放指数，通常为2
@@ -58,11 +59,7 @@ if (overlap_s > 0) {
         float3 locCPA_o = locCPA_s / l;
         float3 locCPB_o = locCPB_s / l;
 
-        // 线速度不缩放：v_O = v_S
-        float3 ALinVel_o = ALinVel;
-        float3 BLinVel_o = BLinVel;
-
-        // 角速度缩放：ω_O = ω_S * l
+        // 旋转速度缩放：ω_O = ω_S * l
         float3 ARotVel_s = ARotVel;
         float3 BRotVel_s = BRotVel;
         float3 ARotVel_o = ARotVel_s * l;
@@ -125,14 +122,17 @@ if (overlap_s > 0) {
         // 初始化力
         float3 F_normal_o_vec = make_float3(0.f, 0.f, 0.f);
         float3 F_tangential_o_vec = make_float3(0.f, 0.f, 0.f);
-        float3 torque_only_force_o = make_float3(0.f, 0.f, 0.f);
+        // float3 torque_only_force_o = make_float3(0.f, 0.f, 0.f);  // ← 修改：注释掉，不再需要
+        
+        // 提前计算力的缩放因子  // ← 新增：提前计算
+        float l_force = powf(l, (float)index);
 
         // ========================================================================
         // SUP 步骤 2：在原始尺度下计算力（使用论文中的模型）
         // ========================================================================
         
         // 计算相对速度
-        const float3 velB2A_o = (ALinVel_o + rotVelCPA_o_local) - (BLinVel_o + rotVelCPB_o_local);
+        const float3 velB2A_o = (ALinVel + rotVelCPA_o_local) - (BLinVel + rotVelCPB_o_local);
         const float projection_o = dot(velB2A_o, B2A);
         float3 vrel_tan_o = velB2A_o - projection_o * B2A;
 
@@ -143,7 +143,8 @@ if (overlap_s > 0) {
         // 计算JKR接触半径
         float a_jkr = sqrt_Rd_o;  // 默认值（纯Hertz接触半径）
         if (gamma_surf > 0.0f) {
-            // ===========================Cardano方法计算JKR接触半径（接近LIGGGHTS版本）===========================
+            // ===========================内联Cardano方法===========================
+            // 无分支Cardano公式计算JKR接触半径（接近LIGGGHTS版本）
             float sqrt_Rd = sqrtf(R_star_o * overlap_o);
             
             // LIGGGHTS的精确公式参数
@@ -191,7 +192,7 @@ if (overlap_s > 0) {
             float a = 0.5f * (w + aterm2);
             
             a_jkr = fmaxf(a, sqrt_Rd);
-            // ===========================Cardano计算结束===========================
+            // ===========================内联结束===========================
         }
         
         // 基于JKR接触半径计算力
@@ -225,6 +226,7 @@ if (overlap_s > 0) {
         const float gamma_n_o = deme::TWO_TIMES_SQRT_FIVE_OVER_SIX * beta_o * sqrtf(Sn_o * mass_eff_o);
         
         F_normal_o_vec = (F_normal_mag + gamma_n_o * projection_o) * B2A;
+        force += F_normal_o_vec * l_force;  // ← 修改：立即累加到force
         
         if (overlap_o <= 0.0f) {
             F_normal_o_vec = make_float3(0.0f, 0.0f, 0.0f);
@@ -273,6 +275,7 @@ if (overlap_s > 0) {
             }
             
             F_tangential_o_vec = tangent_force_o;
+            force += tangent_force_o * l_force;  // ← 修改：立即累加到force
             delta_time_o += ts;
         }
 
@@ -288,22 +291,22 @@ if (overlap_s > 0) {
                 // 负号通过系数实现
                 float coeff = -Crr_cnt * length(F_normal_o_vec) / omega_rel_mag_o;
                 
-                torque_only_force_o = make_float3(
-                    omega_rel_o.x * coeff,
-                    omega_rel_o.y * coeff,
-                    omega_rel_o.z * coeff
+                torque_only_force = make_float3(           // ← 修改：直接缩放赋值给torque_only_force
+                    omega_rel_o.x * coeff * l_force,       // ← 修改：直接乘以l_force
+                    omega_rel_o.y * coeff * l_force,       // ← 修改：直接乘以l_force
+                    omega_rel_o.z * coeff * l_force        // ← 修改：直接乘以l_force
                 );
             }
         }
 
         // ========================================================================
-        // SUP 步骤 3：将力缩放回缩放后的系统
+        // SUP 步骤 3：将力缩放回缩放后的系统  // ← 修改：注释掉整个步骤3
         // ========================================================================
         
-        float l_force = powf(l, (float)index);
-        float3 F_total_o_vec = F_normal_o_vec + F_tangential_o_vec + torque_only_force_o;
+        // float l_force = powf(l, (float)index);  // ← 修改：注释掉（已移到前面）
+        // float3 F_total_o_vec = F_normal_o_vec + F_tangential_o_vec + torque_only_force_o;  // ← 修改：注释掉
         
-        force = F_total_o_vec * l_force;
+        // force = F_total_o_vec * l_force;  // ← 修改：注释掉
 
         // ========================================================================
         // SUP 步骤 4：更新缩放后系统中的历史变量

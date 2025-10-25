@@ -31,12 +31,12 @@ int main() {
     // =========================================================================
     
     // === SUP模型核心参数（与Part1保持一致） ===
-    const float my_scale_factor = 4.0f;                    // SUP缩放因子
+    const float my_scale_factor = 2.0f;                    // SUP缩放因子
     const float scale_force_index = 2.0f;                  // 力的缩放指数
     const int base_particle_count = 1600000;               // 基准粒子数量
     const float base_particle_diameter = 0.0005f;          // 基准粒子直径：0.5mm
     const float particle_density = 1000.0f;                // 颗粒密度：1000 kg/m³
-    const float particle_cohesion = 0.0f;                  // 颗粒间粘聚力
+    const float particle_cohesion = 0.1f;                  // 颗粒间粘聚力
     
     // === 根据缩放因子自动计算的参数 ===
     const float particle_diameter = base_particle_diameter * my_scale_factor;
@@ -77,11 +77,13 @@ int main() {
 
     // 创建求解器实例
     DEMSolver DEMSim;
+
+    DEMSim.SetIntegrator(TIME_INTEGRATOR::CENTERED_DIFFERENCE);
     
     // 设置输出格式和内容
     DEMSim.SetVerbosity(INFO);
     DEMSim.SetOutputFormat(OUTPUT_FORMAT::CSV);
-    DEMSim.SetOutputContent({"VEL", "ANG_VEL"}); 
+    DEMSim.SetOutputContent({"ABSV", "VEL", "ANG_VEL"}); 
     DEMSim.SetContactOutputFormat(OUTPUT_FORMAT::CSV);
     DEMSim.SetContactOutputContent({"CNT_TYPE", "FORCE", "POINT"});
 
@@ -94,7 +96,7 @@ int main() {
         {"E", 1e8},         
         {"nu", 0.3},        
         {"CoR", 0.1},       
-        {"mu", 0.0},        
+        {"mu", 0.3},        
         {"Crr", 0.0},       
         {"Cohesion", 0},
         {"scale_factor_l", my_scale_factor}
@@ -112,8 +114,8 @@ int main() {
     });
     
     // 设置材料相互作用属性
-    DEMSim.SetMaterialPropertyPair("mu", mat_type_mixer, mat_type_particles, 0.1);
-    DEMSim.SetMaterialPropertyPair("CoR", mat_type_mixer, mat_type_particles, 0.0);
+    DEMSim.SetMaterialPropertyPair("mu", mat_type_mixer, mat_type_particles, 0.3);
+    DEMSim.SetMaterialPropertyPair("CoR", mat_type_mixer, mat_type_particles, 0.1);
     DEMSim.SetMaterialPropertyPair("Crr", mat_type_mixer, mat_type_particles, 0.0);
     DEMSim.SetMaterialPropertyPair("Cohesion", mat_type_mixer, mat_type_particles, 0.0);
 
@@ -143,7 +145,7 @@ int main() {
     
     // 错误处理和安全限制
     DEMSim.SetErrorOutVelocity(20000.0);
-    DEMSim.SetErrorOutAvgContacts(50);
+    DEMSim.SetErrorOutAvgContacts(150);
     
     // 接触检测和性能设置
     DEMSim.SetCDUpdateFreq(40);

@@ -631,7 +631,7 @@ def main():
     """
     # ==================== Configurable Parameters ====================
     base_path = "build"  # Search directory, can be "build" or other path
-    filter_cohesion = "001"  # Only process cohesion=0 data, set to None for all
+    filter_cohesion = "000"  # Only process cohesion=0 data, set to None for all
     use_interpolation = False  # Whether to use interpolation
     enable_plotting = True  # Generate plots
     steady_state_fraction = 0.5  # Use last 50% of data (can be 0.33 for last 1/3)
