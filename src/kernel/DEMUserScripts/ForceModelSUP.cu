@@ -169,13 +169,13 @@ if (overlap_s > 0) {
             // 立方根的无分支处理
             float arg = -Q/2.0f + Uterm2;
             float sign_arg = (arg >= 0.0f) ? 1.0f : -1.0f;
-            float U = sign_arg * powf(fabsf(arg) + 1e-10f, 0.333333f);
+            float U = sign_arg * powf(fabsf(arg) + 1e-30f, 0.333333f);
             
             // 无分支版本的s计算
             float P_nonzero = (fabsf(P) > 1e-10f) ? 1.0f : 0.0f;
-            float s_with_P = -5.0f*c2/6.0f + U - P/(3.0f*U + 1e-10f);
+            float s_with_P = -5.0f*c2/6.0f + U - P/(3.0f*U + 1e-30f);
             float sign_Q = (Q >= 0.0f) ? 1.0f : -1.0f;
-            float s_without_P = -5.0f*c2/6.0f - sign_Q * powf(fabsf(Q) + 1e-10f, 0.333333f);
+            float s_without_P = -5.0f*c2/6.0f - sign_Q * powf(fabsf(Q) + 1e-30f, 0.333333f);
             float s = P_nonzero * s_with_P + (1.0f - P_nonzero) * s_without_P;
             
             // 继续LIGGGHTS算法
@@ -183,7 +183,7 @@ if (overlap_s > 0) {
             w_arg = fmaxf(w_arg, 0.0f);
             float w = sqrtf(w_arg);
             
-            float lambda = c1/(2.0f*w + 1e-10f);
+            float lambda = c1/(2.0f*w + 1e-30f);
             
             float aterm1 = w*w - 4.0f*(c2 + s + lambda);
             aterm1 = fmaxf(aterm1, 0.0f);
