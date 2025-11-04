@@ -28,6 +28,7 @@ __pycache__/
 .pytest_cache/
 
 # Results
+DEM-Data/
 results/
 output/
 backup/
