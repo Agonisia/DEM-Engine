@@ -3,6 +3,7 @@
 SUP Mixer Velocity Distribution Analysis - Multi-Directory Comparison Version
 Analyzes particle velocity distributions in DEM mixer simulations with SUP models
 Supports multiple surface energy values comparison
+Fixed: Correct frame time intervals for different scale factors
 """
 
 import os
@@ -35,9 +36,16 @@ class Config:
         self.output_base = Path(f'sta_results/se{surface_energy}/')
         self.output_path = self.output_base / f'f{scale_factor}/'
         
+        # ===== Fix1: Adding frame time interval parameter =====
+        # determine the output interval based on the scale factor
+        if scale_factor == 1:
+            self.frame_dt = 5e-3  # f1 using 5ms interval (5000 time steps)
+        else:
+            self.frame_dt = 1e-3  # others using 1ms interval (1000 time steps)
+
         # Simulation parameters
         self.RPM = 300  # Mixer rotation speed
-        self.dt = 1e-6  # Time step
+        self.dt = 1e-6  # Simulation time step (only for recording, not for frame time calculation)
         self.frame_skip = 100  # Read every nth frame
         self.max_sample_size = 100000  # Maximum sampling rows
         self.chunk_size = 10000  # Chunk reading size
@@ -66,7 +74,7 @@ class Config:
         self.output_path.mkdir(parents=True, exist_ok=True)
         
     def __str__(self):
-        return f"Config(f{self.scale_factor}se{self.surface_energy})"
+        return f"Config(f{self.scale_factor}se{self.surface_energy}, frame_dt={self.frame_dt*1000:.1f}ms)"
 
 class MultiDirectoryConfig:
     """Configuration for multi-directory comparison analysis"""
@@ -104,11 +112,13 @@ class MultiDirectoryConfig:
         return sorted(dirs, key=lambda x: (x['scale_factor'], x['surface_energy']))
 
 # ======================== JIT Accelerated Functions ========================
+# ===== Fix2: Using frame_dt instead of dt in angle calculation functions =====
 @jit(nopython=True, parallel=True)
 def compute_angles_vectorized(x: np.ndarray, y: np.ndarray, 
                              frame_numbers: np.ndarray, 
-                             dt: float, RPM: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Vectorized calculation of all angle-related values"""
+                             frame_dt: float, RPM: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Vectorized calculation of all angle-related values
+    Fix: Using frame_dt instead of dt to calculate actual time"""
     n = len(x)
     polar_angles = np.zeros(n)
     rotor_angles = np.zeros(n)
@@ -120,8 +130,8 @@ def compute_angles_vectorized(x: np.ndarray, y: np.ndarray,
         # Calculate polar angle
         polar_angles[i] = np.arctan2(y[i], x[i])
         
-        # Calculate rotor angle
-        time = frame_numbers[i] * dt
+        # Calculate rotor angle - 使用frame_dt计算实际物理时间
+        time = frame_numbers[i] * frame_dt  # 修改：使用frame_dt而不是dt
         rotor_angles[i] = (RPS * time * 2 * np.pi) % (2 * np.pi)
         
         # Calculate relative angle
@@ -203,8 +213,9 @@ class MixerDataProcessor:
         start_idx = int(total_frames * (1 - self.config.steady_state_fraction))
         steady_state_frames = all_frames[start_idx:]
         
-        print(f"  ✓ Total frames found: {total_frames}")
-        print(f"  ✓ Using last {self.config.steady_state_fraction:.0%} ({len(steady_state_frames)} frames) for steady state")
+        print(f"  ✔ Total frames found: {total_frames}")
+        print(f"  ✔ Using last {self.config.steady_state_fraction:.0%} ({len(steady_state_frames)} frames) for steady state")
+        print(f"  ✔ Frame time interval: {self.config.frame_dt*1000:.1f} ms")
         
         # Filter by frame_skip
         files_to_read = []
@@ -228,8 +239,8 @@ class MixerDataProcessor:
         """Load mixer data (steady state only)"""
         files_to_read = self.get_files_to_read(max_files)
         
-        print(f"  ✓ Will process {len(files_to_read)} files")
-        print(f"  ✓ Reading every {self.config.frame_skip} frames")
+        print(f"  ✔ Will process {len(files_to_read)} files")
+        print(f"  ✔ Reading every {self.config.frame_skip} frames")
         print("-" * 40)
         
         # Check first file structure
@@ -238,7 +249,7 @@ class MixerDataProcessor:
         has_velocity = 'velocity' in first_df.columns
         
         if has_velocity:
-            print("  ✓ Detected pre-processed files with velocity column")
+            print("  ✔ Detected pre-processed files with velocity column")
         else:
             print("  ⚠ No velocity column found - will calculate from v_x, v_y, v_z")
         
@@ -254,7 +265,8 @@ class MixerDataProcessor:
                     df = pd.read_csv(file_path)
                 
                 df['frame'] = frame_num
-                df['time'] = frame_num * self.config.dt
+                # ===== 修改3：使用frame_dt计算时间 =====
+                df['time'] = frame_num * self.config.frame_dt  # 使用frame_dt而不是dt
                 all_data.append(df)
                 
                 # Progress indicator
@@ -271,9 +283,13 @@ class MixerDataProcessor:
         
         # Merge data
         print("-" * 40)
-        print("  ✓ Merging data frames...")
+        print("  ✔ Merging data frames...")
         self.df = pd.concat(all_data, ignore_index=True)
-        print(f"  ✓ Total data points: {len(self.df):,}")
+        print(f"  ✔ Total data points: {len(self.df):,}")
+        
+        # Add verification information
+        print(f"  ✔ Total simulation time: {self.df['time'].max():.3f} seconds")
+        print(f"  ✔ Rotor revolutions: {self.df['time'].max() * self.config.RPM / 60:.1f}")
         
         return self.df
     
@@ -284,7 +300,7 @@ class MixerDataProcessor:
         
         # Check for pre-calculated velocity
         if 'velocity' in self.df.columns:
-            print("  ✓ Using pre-calculated velocity column")
+            print("  ✔ Using pre-calculated velocity column")
             results = {
                 'v_total': self.df['velocity'].values,
                 'v_xy': np.sqrt(self.df['v_x'].values**2 + self.df['v_y'].values**2),
@@ -295,7 +311,7 @@ class MixerDataProcessor:
                 'r_dist': np.sqrt(self.df['X'].values**2 + self.df['Y'].values**2)
             }
         else:
-            print("  ✓ Calculating velocities using JIT acceleration...")
+            print("  ✔ Calculating velocities using JIT acceleration...")
             results = calculate_all_velocities(
                 self.df['v_x'].values, self.df['v_y'].values, self.df['v_z'].values,
                 self.df['w_x'].values, self.df['w_y'].values, self.df['w_z'].values,
@@ -306,21 +322,21 @@ class MixerDataProcessor:
         for key, value in results.items():
             self.df[key] = value
         
-        print(f"  ✓ Velocity processing complete")
+        print(f"  ✔ Velocity processing complete")
     
     def process_angles(self) -> None:
         """Process angle data"""
         if self.df is None:
             raise ValueError("No data loaded. Call load_data() first.")
         
-        print("  ✓ Calculating angles using JIT acceleration...")
+        print("  ✔ Calculating angles using JIT acceleration...")
         
-        # Use vectorized JIT functions
+        # ===== 修改4：传入frame_dt而不是dt =====
         polar_angles, rotor_angles, relative_angles = compute_angles_vectorized(
             self.df['X'].values,
             self.df['Y'].values,
             self.df['frame'].values,
-            self.config.dt,
+            self.config.frame_dt,  # use frame_dt instead of dt
             self.config.RPM
         )
         
@@ -333,7 +349,7 @@ class MixerDataProcessor:
         self.df['relative_angle'] = relative_angles
         self.df['angle_interval'] = intervals
         
-        print(f"  ✓ Angle processing complete")
+        print(f"  ✔ Angle processing complete")
 
 # ======================== Statistical Analysis Class ========================
 class StatisticalAnalyzer:
@@ -474,11 +490,12 @@ class MultiDirectoryComparison:
         result['particle_stats'].to_csv(config.output_path / f'ParticleStats_f{config.scale_factor}.csv')
         result['pdf_data'].to_csv(config.output_path / f'PDF_f{config.scale_factor}.csv', index=False)
         
-        # Save summary
+        # Save summary with frame_dt info
         with open(config.output_path / f'Summary_f{config.scale_factor}.txt', 'w') as f:
             summary = result['summary']
             f.write(f"SUP Mixer Analysis Summary - Scale Factor f{config.scale_factor}\n")
             f.write(f"Surface Energy: se{config.surface_energy}\n")
+            f.write(f"Frame time interval: {config.frame_dt*1000:.1f} ms\n")
             f.write("=" * 60 + "\n\n")
             f.write(f"Total particles analyzed: {summary['total_particles']}\n")
             f.write(f"Number of frames: {summary['num_frames']}\n")
@@ -490,7 +507,7 @@ class MultiDirectoryComparison:
             f.write(f"  Min:    {summary['velocity_stats']['min']:.4f} m/s\n")
             f.write(f"  Median: {summary['velocity_stats']['median']:.4f} m/s\n")
         
-        print(f"  ✓ Results saved to: {config.output_path}")
+        print(f"  ✔ Results saved to: {config.output_path}")
     
     def generate_comparison(self):
         """Generate comparison plots and summary"""
@@ -513,6 +530,7 @@ class MultiDirectoryComparison:
                 'Directory': name,
                 'Scale_Factor': result['dir_info']['scale_factor'],
                 'Surface_Energy': result['dir_info']['surface_energy'],
+                'Frame_Interval_ms': result['config'].frame_dt * 1000,
                 'Mean_Velocity': summary['velocity_stats']['mean'],
                 'Std_Velocity': summary['velocity_stats']['std'],
                 'Max_Velocity': summary['velocity_stats']['max'],
@@ -526,7 +544,7 @@ class MultiDirectoryComparison:
         comparison_df = pd.DataFrame(comparison_data)
         comparison_df = comparison_df.sort_values(['Scale_Factor', 'Surface_Energy'])
         comparison_df.to_csv(comparison_dir / 'velocity_comparison.csv', index=False)
-        print(f"  ✓ Comparison data saved to: {comparison_dir / 'velocity_comparison.csv'}")
+        print(f"  ✔ Comparison data saved to: {comparison_dir / 'velocity_comparison.csv'}")
         
         # Generate comparison plots if enabled
         if self.multi_config.enable_plotting:
@@ -610,7 +628,7 @@ class MultiDirectoryComparison:
         plt.savefig(output_dir / 'mean_velocity_comparison.png', dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"  ✓ Comparison plots saved to: {output_dir}")
+        print(f"  ✔ Comparison plots saved to: {output_dir}")
 
 # ======================== Print Functions ========================
 def print_header(title: str, width: int = 60):
@@ -630,7 +648,7 @@ def main():
     Main program for multi-directory analysis
     """
     # ==================== Configurable Parameters ====================
-    base_path = "build"  # Search directory, can be "build" or other path
+    base_path = "/media/huyuze/Fanxiang/DEME_Data/backup251109"  # Search directory, can be "build" or other path
     filter_cohesion = "000"  # Only process cohesion=0 data, set to None for all
     use_interpolation = False  # Whether to use interpolation
     enable_plotting = True  # Generate plots
@@ -638,6 +656,7 @@ def main():
     
     # ==================== Run Analysis ====================
     print_header("SUP MIXER MULTI-DIRECTORY VELOCITY ANALYSIS")
+    print("Version: Fixed frame time intervals")
     start_time = datetime.datetime.now()
     
     try:
@@ -664,7 +683,9 @@ def main():
         print(f"  Use interpolation: {use_interpolation}")
         print(f"\nFound {len(multi_config.directories)} directories to process:")
         for d in multi_config.directories:
-            print(f"  - {d['name']}")
+            scale_f = d['scale_factor']
+            frame_dt_ms = 5.0 if scale_f == 1 else 1.0
+            print(f"  - {d['name']} (frame interval: {frame_dt_ms} ms)")
         
         # Process all directories
         comparison = MultiDirectoryComparison(multi_config)
@@ -691,3 +712,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

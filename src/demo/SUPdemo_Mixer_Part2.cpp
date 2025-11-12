@@ -32,7 +32,7 @@ int main() {
     // =========================================================================
     
     // === SUP模型核心参数 ===
-    const float my_scale_factor = 4.0f;                    // SUP缩放因子
+    const float my_scale_factor = 1.0f;                    // SUP缩放因子
     const float scale_force_index = 2.0f;                  // 力的缩放指数
     const float base_particle_mass = 0.0458f;              // 基准系统总质量：0.0458kg
     const float base_particle_diameter = 0.0005f;          // 基准粒子直径：0.5mm
@@ -59,7 +59,7 @@ int main() {
     const float simulation_time = 3.0f;                   // 仿真时间：3秒
     
     // === 时间参数 ===
-    const float step_size = 1e-6f;                         // 时间步长
+    const float step_size = 5e-7f;                         // 时间步长
     const float time_per_frame = 
         (my_scale_factor == 1.0f) ? 5e-3f : 1e-3f;         // 每帧仿真时间
     
@@ -288,7 +288,7 @@ int main() {
     
     // 创建输出目录（添加dual_density标识）
     std::ostringstream oss;
-    oss << "SUPMixerOutput_DualDensity_f" << (int)my_scale_factor 
+    oss << "SUPMixerOutput_f" << (int)my_scale_factor 
         << "se" << std::setw(3) << std::setfill('0') << (int)(particle_cohesion * 100);
     std::string dir_name = oss.str();
     std::filesystem::path out_dir = std::filesystem::current_path() / dir_name;
@@ -394,7 +394,7 @@ int main() {
             
             // 输出粒子数据文件
             char filename[200];
-            sprintf(filename, "mixer_dual_output_%04d.csv", frame_count);
+            sprintf(filename, "mixer_output_%04d.csv", frame_count);
             DEMSim.WriteSphereFile(out_dir / filename);
 
             // 输出接触力文件
