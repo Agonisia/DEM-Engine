@@ -4,7 +4,7 @@
 //	SPDX-License-Identifier: BSD-3-Clause
 
 // =============================================================================
-// SUP模型搅拌器仿真：Part2 - 读取粒子配置并运行搅拌仿真
+// SUP模型搅拌器仿真：Part2 - 读取双密度粒子配置并运行搅拌仿真
 // =============================================================================
 
 #include <core/ApiVersion.h>
@@ -21,6 +21,7 @@
 #include <map>
 #include <algorithm>
 #include <iomanip>
+#include <sstream>
 
 using namespace deme;
 using namespace std::filesystem;
@@ -30,18 +31,26 @@ int main() {
     // 1. 仿真设置与SUP模型参数
     // =========================================================================
     
-    // === SUP模型核心参数（与Part1保持一致） ===
-    const float my_scale_factor = 2.0f;                    // SUP缩放因子
+    // === SUP模型核心参数 ===
+    const float my_scale_factor = 1.0f;                    // SUP缩放因子
     const float scale_force_index = 2.0f;                  // 力的缩放指数
-    const int base_particle_count = 1600000;               // 基准粒子数量
+    const float base_particle_mass = 0.0458f;              // 基准系统总质量：0.0458kg
     const float base_particle_diameter = 0.0005f;          // 基准粒子直径：0.5mm
-    const float particle_density = 1000.0f;                // 颗粒密度：1000 kg/m³
-    const float particle_cohesion = 0.1f;                  // 颗粒间粘聚力
+    
+    // === 两种粒子密度（与Part1一致） ===
+    const float particle_density_light = 1000.0f;          // 轻颗粒密度：1000 kg/m³
+    const float particle_density_heavy = 2000.0f;          // 重颗粒密度：2000 kg/m³
+    const float particle_cohesion = 0.0f;                  // 颗粒间粘聚力
     
     // === 根据缩放因子自动计算的参数 ===
     const float particle_diameter = base_particle_diameter * my_scale_factor;
     const float particle_radius = particle_diameter / 2.0f;
-    const float particle_mass = particle_density * (4.0/3.0) * 3.14159265359 * 
+    
+    // 轻粒子质量（密度1000）
+    const float particle_mass_light = particle_density_light * (4.0/3.0) * 3.14159265359 * 
+                               pow(particle_radius, 3);
+    // 重粒子质量（密度2000）
+    const float particle_mass_heavy = particle_density_heavy * (4.0/3.0) * 3.14159265359 * 
                                pow(particle_radius, 3);
     
     // === 搅拌器参数 ===
@@ -50,8 +59,9 @@ int main() {
     const float simulation_time = 3.0f;                   // 仿真时间：3秒
     
     // === 时间参数 ===
-    const float step_size = 1e-6f;                         // 时间步长
-    const float time_per_frame = 1e-3f;                    // 每帧仿真时间
+    const float step_size = 5e-7f;                         // 时间步长
+    const float time_per_frame = 
+        (my_scale_factor == 1.0f) ? 5e-3f : 1e-3f;         // 每帧仿真时间
     
     // === 仿真域参数 ===
     const float domain_size = 0.1f;                        // 100mm × 100mm 水平尺寸
@@ -59,17 +69,20 @@ int main() {
     
     // === Family ID定义 ===
     const unsigned int FAMILY_MIXER = 1;
-    const unsigned int FAMILY_PARTICLES = 2;
+    const unsigned int FAMILY_PARTICLES_LIGHT = 2;         // 轻粒子
+    const unsigned int FAMILY_PARTICLES_HEAVY = 3;         // 重粒子
     
     // === 输入文件路径 ===
-    const std::string input_dir = "/home/huyuze/DEM-Data/";
+    const std::string input_dir = "/home/huyuze/DEM-Engine/DEM-Data/dual/";
     int scale_int = static_cast<int>(my_scale_factor);
-    const std::string input_file = "SUPMixer_f" + std::to_string(scale_int) + "se000.csv"; // 根据实际文件名调整
+    const std::string input_file = "SUPMixer_dual_f" + std::to_string(scale_int) + "se000.csv"; // 根据实际文件名调整
 
     // 输出SUP模型信息
-    std::cout << "\n========== SUPdemo_Mixer_Part2  ==========" << std::endl;
+    std::cout << "\n========== SUPdemo_Mixer_Part2 (双密度系统) ==========" << std::endl;
     std::cout << "缩放因子: " << my_scale_factor << std::endl;
     std::cout << "粒子直径: " << particle_diameter * 1000 << " mm" << std::endl;
+    std::cout << "轻粒子质量: " << particle_mass_light * 1000 << " g (密度1000)" << std::endl;
+    std::cout << "重粒子质量: " << particle_mass_heavy * 1000 << " g (密度2000)" << std::endl;
     std::cout << "搅拌器转速: " << mixer_speed_rpm << " RPM" << std::endl;
     std::cout << "仿真时间: " << simulation_time << " 秒" << std::endl;
     std::cout << "输入文件: " << input_dir + input_file << std::endl;
@@ -83,7 +96,7 @@ int main() {
     // 设置输出格式和内容
     DEMSim.SetVerbosity(INFO);
     DEMSim.SetOutputFormat(OUTPUT_FORMAT::CSV);
-    DEMSim.SetOutputContent({"ABSV", "VEL", "ANG_VEL"}); 
+    DEMSim.SetOutputContent({"ABSV", "VEL", "ANG_VEL", "FAMILY"}); // 添加FAMILY以区分粒子类型
     DEMSim.SetContactOutputFormat(OUTPUT_FORMAT::CSV);
     DEMSim.SetContactOutputContent({"CNT_TYPE", "FORCE", "POINT"});
 
@@ -102,7 +115,7 @@ int main() {
         {"scale_factor_l", my_scale_factor}
     });
     
-    // 定义颗粒材料
+    // 定义颗粒材料（统一材料，通过质量区分密度）
     auto mat_type_particles = DEMSim.LoadMaterial({
         {"E", 1e8},         
         {"nu", 0.3},        
@@ -151,51 +164,95 @@ int main() {
     DEMSim.SetCDUpdateFreq(40);
     DEMSim.SetExpandSafetyAdder(2.0);
 
-    // =========================================================================
-    // 4. 读取Part1输出的粒子配置
-    // =========================================================================
+    // =========================================================================  
+    // 4. 读取Part1输出的粒子配置  
+    // =========================================================================  
     
-    std::cout << "\n=== 读取粒子配置 ===" << std::endl;
+    std::cout << "\n=== 读取粒子配置 ===" << std::endl;  
     
-    // 读取粒子位置和方向
-    auto particle_xyz = DEMSim.ReadClumpXyzFromCsv(input_dir + input_file);
-    auto particle_quat = DEMSim.ReadClumpQuatFromCsv(input_dir + input_file);
+    // 读取粒子位置和方向  
+    auto particle_xyz = DEMSim.ReadClumpXyzFromCsv(input_dir + input_file);  
+    auto particle_quat = DEMSim.ReadClumpQuatFromCsv(input_dir + input_file);  
     
-    // 准备加载粒子的向量
-    std::vector<float3> in_xyz;
-    std::vector<float4> in_quat;
-    std::vector<std::shared_ptr<DEMClumpTemplate>> in_types;
+    // 准备加载粒子的向量  
+    std::vector<float3> in_xyz;  
+    std::vector<float4> in_quat;  
+    std::vector<std::shared_ptr<DEMClumpTemplate>> in_types;  
+    std::vector<unsigned int> in_families;  // 声明family向量  
     
-    // 创建粒子模板
-    auto clump_template = DEMSim.LoadSphereType(
-        particle_mass,
-        particle_radius,
-        mat_type_particles
-    );
+    // 创建两种粒子模板  
+    auto light_clump_template = DEMSim.LoadSphereType(  
+        particle_mass_light,    // 轻粒子质量  
+        particle_radius,  
+        mat_type_particles  
+    );  
     
-    // 处理读取的数据（假设只有一种粒子类型）
-    for (const auto& [type_name, positions] : particle_xyz) {
-        auto& orientations = particle_quat[type_name];
+    auto heavy_clump_template = DEMSim.LoadSphereType(  
+        particle_mass_heavy,    // 重粒子质量  
+        particle_radius,  
+        mat_type_particles  
+    );  
+    
+    // 统计变量  
+    int light_count = 0;  
+    int heavy_count = 0;  
+    
+    // 处理读取的数据  
+    for (const auto& [type_name, positions] : particle_xyz) {  
+        auto& orientations = particle_quat[type_name];  
         
-        for (size_t i = 0; i < positions.size(); i++) {
-            in_xyz.push_back(positions[i]);
-            in_quat.push_back(orientations[i]);
-            in_types.push_back(clump_template);
-        }
+        // 根据type_name判断粒子类型  
+        bool is_light = (type_name == "0000");  // "0000"是轻粒子  
+        bool is_heavy = (type_name == "0001");  // "0001"是重粒子  
         
-        std::cout << "读取粒子类型 " << type_name << ": " << positions.size() << " 个粒子" << std::endl;
-    }
+        for (size_t i = 0; i < positions.size(); i++) {  
+            in_xyz.push_back(positions[i]);  
+            in_quat.push_back(orientations[i]);  
+            
+            if (is_light) {  
+                in_types.push_back(light_clump_template);  
+                in_families.push_back(FAMILY_PARTICLES_LIGHT);  
+                light_count++;  
+            } else if (is_heavy) {  
+                in_types.push_back(heavy_clump_template);  
+                in_families.push_back(FAMILY_PARTICLES_HEAVY);  
+                heavy_count++;  
+            } else {  
+                std::cerr << "警告: 未知的粒子类型 " << type_name << std::endl;  
+            }  
+        }  
+        
+        std::cout << "读取粒子类型 " << type_name << ": "   
+                << positions.size() << " 个粒子" << std::endl;  
+    }  
     
-    // 加载粒子到系统
-    DEMClumpBatch particle_batch(in_xyz.size());
-    particle_batch.SetTypes(in_types);
-    particle_batch.SetPos(in_xyz);
-    particle_batch.SetOriQ(in_quat);
+    std::cout << "  - 轻粒子（密度1000）: " << light_count << " 个" << std::endl;  
+    std::cout << "  - 重粒子（密度2000）: " << heavy_count << " 个" << std::endl;  
+    std::cout << "  - 总计: " << in_xyz.size() << " 个粒子" << std::endl;  
     
-    particle_batch.SetFamily(FAMILY_PARTICLES);
-    DEMSim.AddClumps(particle_batch);
+    // 计算质量统计  
+    float total_light_mass = light_count * particle_mass_light;  
+    float total_heavy_mass = heavy_count * particle_mass_heavy;  
+    float total_mass = total_light_mass + total_heavy_mass;  
     
-    std::cout << "成功加载 " << in_xyz.size() << " 个粒子到系统" << std::endl;
+    std::cout << "质量统计:" << std::endl;  
+    std::cout << "  - 轻粒子总质量: " << total_light_mass << " kg" << std::endl;  
+    std::cout << "  - 重粒子总质量: " << total_heavy_mass << " kg" << std::endl;  
+    std::cout << "  - 系统总质量: " << total_mass << " kg" << std::endl;  
+    if (total_heavy_mass > 0) {  
+        std::cout << "  - 质量比（轻:重）: " << total_light_mass/total_heavy_mass << ":1" << std::endl;  
+    }  
+    
+    // 加载粒子到系统  
+    DEMClumpBatch particle_batch(in_xyz.size());  
+    particle_batch.SetTypes(in_types);  
+    particle_batch.SetPos(in_xyz);  
+    particle_batch.SetOriQ(in_quat);  
+    particle_batch.SetFamilies(in_families);  // 设置Family信息  
+    
+    DEMSim.AddClumps(particle_batch);  
+    
+    std::cout << "成功加载 " << in_xyz.size() << " 个双密度粒子到系统" << std::endl;
 
     // =========================================================================
     // 5. 创建搅拌器几何体
@@ -229,7 +286,7 @@ int main() {
     // 6. 创建输出目录和Inspector
     // =========================================================================
     
-    // 创建输出目录
+    // 创建输出目录（添加dual_density标识）
     std::ostringstream oss;
     oss << "SUPMixerOutput_f" << (int)my_scale_factor 
         << "se" << std::setw(3) << std::setfill('0') << (int)(particle_cohesion * 100);
@@ -237,7 +294,7 @@ int main() {
     std::filesystem::path out_dir = std::filesystem::current_path() / dir_name;
     create_directory(out_dir);
     
-    // 创建Inspector对象
+    // 创建Inspector对象（为两种粒子分别创建）
     auto KE_inspector = DEMSim.CreateInspector("clump_kinetic_energy");
     auto max_v_inspector = DEMSim.CreateInspector("clump_max_absv");
     auto max_z_inspector = DEMSim.CreateInspector("clump_max_z");
@@ -245,8 +302,9 @@ int main() {
     
     // 创建数据输出文件
     std::ofstream energy_file(out_dir / "kinetic_energy_history.csv");
-    energy_file << "Time(s),Frame,KineticEnergy(J),MaxVelocity(m/s),"
-                << "MaxZ(m),MinZ(m),AvgContacts,MixerTorque(Nm)" << std::endl;
+    energy_file << "Time(s),Frame,TotalKE(J),MaxVelocity(m/s),"
+                << "MaxZ(m),MinZ(m),AvgContacts,MixerTorque(Nm),"
+                << "LightParticles,HeavyParticles" << std::endl;
     
     // 用于存储时序数据
     std::vector<float> time_history;
@@ -265,9 +323,9 @@ int main() {
     // 8. 主仿真循环
     // =========================================================================
     
-    std::cout << "\n=== 开始搅拌仿真 ===" << std::endl;
+    std::cout << "\n=== 开始双密度混合仿真 ===" << std::endl;
     std::cout << "搅拌器角速度: " << mixer_angular_velocity << " rad/s" << std::endl;
-    std::cout << "监测参数: 动能, 速度, 位置, 接触数, 搅拌器扭矩" << std::endl;
+    std::cout << "监测参数: 动能, 速度, 位置, 接触数, 搅拌器扭矩, 混合度" << std::endl;
     
     unsigned int frame_steps = (unsigned int)(time_per_frame / step_size);
     unsigned int curr_step = 0;
@@ -358,7 +416,6 @@ int main() {
     
     // 关闭数据文件
     energy_file.close();
-    
     std::chrono::high_resolution_clock::time_point end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> time_sec = std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
     
@@ -366,7 +423,7 @@ int main() {
     // 9. 后处理和统计
     // =========================================================================
    
-    std::cout << "\n=== 仿真完成 ===" << std::endl;
+    std::cout << "\n=== 双密度混合仿真完成 ===" << std::endl;
     std::cout << "总运行时间: " << time_sec.count() << " 秒" << std::endl;
     std::cout << "输出目录: " << out_dir << std::endl;
     std::cout << "数据文件: kinetic_energy_history.csv" << std::endl;
@@ -401,36 +458,20 @@ int main() {
         std::cout << "平均扭矩(绝对值): " << avg_torque << " Nm" << std::endl;
         std::cout << "最大扭矩(绝对值): " << max_torque << " Nm" << std::endl;
         
-        // 计算稳态判定（最后1秒的变化）
-        if (time_history.size() >= 100) {
-            size_t start_idx = time_history.size() - 100;
-            float recent_avg_KE = 0.0f;
-            for (size_t i = start_idx; i < KE_history.size(); i++) {
-                recent_avg_KE += KE_history[i];
-            }
-            recent_avg_KE /= (KE_history.size() - start_idx);
-            
-            float KE_variation = std::abs(recent_avg_KE - avg_KE) / avg_KE * 100;
-            std::cout << "\n--- 稳态分析 ---" << std::endl;
-            std::cout << "最后1秒平均动能: " << recent_avg_KE << " J" << std::endl;
-            std::cout << "动能变化率: " << KE_variation << "%" << std::endl;
-            if (KE_variation < 5) {
-                std::cout << "系统接近稳态" << std::endl;
-            } else {
-                std::cout << "系统尚未达到稳态" << std::endl;
-            }
-        }
-        
         // 写入统计文件
         std::ofstream stats_file(out_dir / "simulation_statistics.txt");
-        stats_file << "SUP Mixer Simulation Statistics\n";
-        stats_file << "================================\n";
+        stats_file << "SUP Mixer Dual Density Simulation Statistics\n";
+        stats_file << "============================================\n";
         stats_file << "Simulation Parameters:\n";
         stats_file << "  Simulation Time: " << simulation_time << " s\n";
-        stats_file << "  Number of Particles: " << in_xyz.size() << "\n";
+        stats_file << "  Total Particles: " << in_xyz.size() << "\n";
+        stats_file << "    - Light Particles (1000 kg/m³): " << light_count << "\n";
+        stats_file << "    - Heavy Particles (2000 kg/m³): " << heavy_count << "\n";
         stats_file << "  Scale Factor: " << my_scale_factor << "\n";
         stats_file << "  Particle Diameter: " << particle_diameter * 1000 << " mm\n";
-        stats_file << "  Particle Mass: " << particle_mass << " kg\n";
+        stats_file << "  Light Particle Mass: " << particle_mass_light << " kg\n";
+        stats_file << "  Heavy Particle Mass: " << particle_mass_heavy << " kg\n";
+        stats_file << "  Total System Mass: " << total_mass << " kg\n";
         stats_file << "  Mixer Speed: " << mixer_speed_rpm << " RPM\n";
         stats_file << "  Time Step: " << step_size << " s\n";
         stats_file << "\nKinetic Energy Statistics:\n";
@@ -461,6 +502,6 @@ int main() {
     DEMSim.ShowThreadCollaborationStats();
     
     std::cout << "========================================" << std::endl;
-    std::cout << "SUPdemo_Mixer_Part2 退出..." << std::endl;
+    std::cout << "SUPdemo_Mixer_Part2 (Dual Density) 退出..." << std::endl;
     return 0;
 }

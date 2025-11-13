@@ -4,7 +4,7 @@
 //	SPDX-License-Identifier: BSD-3-Clause
 
 // =============================================================================
-// SUP模型搅拌器仿真：准备工作
+// SUP模型搅拌器仿真：双密度倒置配置粒子系统（明确分层版本）
 // =============================================================================
 
 #include <core/ApiVersion.h>
@@ -29,9 +29,12 @@ int main() {
     const float my_scale_factor = 1.0f;                    // SUP缩放因子
     const float scale_force_index = 2.0f;                  // 力的缩放指数
     const int base_particle_count = 1600000;               // 基准粒子数量设定（缩放因子为1时）
-    const float base_particle_mass = 0.0458f;              // 基准粒子质量设定：0.0458kg
+    const float base_particle_mass = 0.0458f;              // 基准系统总质量：0.0458kg（固定值）
     const float base_particle_diameter = 0.0005f;          // 基准粒子直径：0.5mm
-    const float particle_density = 1000.0f;                // 颗粒密度：1000 kg/m³
+    
+    // === 两种粒子密度 ===
+    const float particle_density_light = 1000.0f;          // 轻颗粒密度：1000 kg/m³
+    const float particle_density_heavy = 2000.0f;          // 重颗粒密度：2000 kg/m³
     const float particle_cohesion = 0.0f;                  // 颗粒间粘聚力
 
     // === 时间参数 ===
@@ -46,15 +49,43 @@ int main() {
     // === 根据缩放因子自动计算的参数 ===
     const float particle_diameter = base_particle_diameter * my_scale_factor;
     const float particle_radius = particle_diameter / 2.0f;
-    const float particle_mass = particle_density * (4.0/3.0) * 3.14159265359 * 
+    
+    // 轻粒子质量（密度1000）
+    const float particle_mass_light = particle_density_light * (4.0/3.0) * 3.14159265359 * 
                                pow(particle_radius, 3);
+    // 重粒子质量（密度2000）
+    const float particle_mass_heavy = particle_density_heavy * (4.0/3.0) * 3.14159265359 * 
+                               pow(particle_radius, 3);
+    
     const int scale_factor_cubed = (int)pow(my_scale_factor, 3);
-    const int actual_particle_count = base_particle_count / scale_factor_cubed;
-    const float total_mass = base_particle_count * particle_density * (4.0/3.0) * 
-                            3.14159265359 * pow(base_particle_diameter/2.0f, 3);
-    const int particles_per_batch = actual_particle_count / num_batches;
-    const int remaining_particles = actual_particle_count % num_batches;
-    const float batch_interval_time = frames_between_batches * time_per_frame;
+    
+    // === 基于基准质量的粒子数计算 ===
+    // 使用base_particle_mass作为系统总质量
+    const float target_total_mass = base_particle_mass;  // 固定系统总质量：0.0458kg
+    
+    // 基于1:1质量比例计算粒子数
+    const float target_light_mass = target_total_mass / 2.0f;
+    const float target_heavy_mass = target_total_mass / 2.0f;
+    
+    // 计算所需的粒子数量
+    const int target_light_particles = (int)(target_light_mass / particle_mass_light);
+    const int target_heavy_particles = (int)(target_heavy_mass / particle_mass_heavy);
+    const int actual_particle_count = target_light_particles + target_heavy_particles;
+    
+    // === 明确分层批次分配 ===
+    // 根据粒子数比例计算批次分配
+    const float light_ratio = (float)target_light_particles / actual_particle_count;
+    const float heavy_ratio = (float)target_heavy_particles / actual_particle_count;
+    
+    // 计算轻粒子和重粒子应占用的批次数
+    const int light_batches = (int)ceil(num_batches * light_ratio);  // 轻粒子批次（前几批）
+    const int heavy_batches = num_batches - light_batches;           // 重粒子批次（后几批）
+    
+    // 每批次的粒子数
+    const int light_particles_per_batch = target_light_particles / light_batches;
+    const int light_particles_remainder = target_light_particles % light_batches;
+    const int heavy_particles_per_batch = target_heavy_particles / heavy_batches;
+    const int heavy_particles_remainder = target_heavy_particles % heavy_batches;
 
     // === 仿真域参数 ===
     const float domain_size = 0.1f;                        // 100mm × 100mm 水平尺寸
@@ -66,18 +97,28 @@ int main() {
     
     // === Family ID定义 ===
     const unsigned int FAMILY_MIXER = 1;
-    const unsigned int FAMILY_PARTICLES = 2;
+    const unsigned int FAMILY_PARTICLES_LIGHT = 2;         // 轻粒子
+    const unsigned int FAMILY_PARTICLES_HEAVY = 3;         // 重粒子
     
     // 输出SUP模型信息
-    std::cout << "\n========== SUP模型参数 ==========" << std::endl;
+    std::cout << "\n========== SUP模型参数（倒置双密度系统 - 明确分层版） ==========" << std::endl;
     std::cout << "缩放因子 l: " << my_scale_factor << std::endl;
-    std::cout << "基准粒子数 (l=1): " << base_particle_count << std::endl;
-    std::cout << "实际粒子数: " << actual_particle_count << std::endl;
+    std::cout << "基准系统总质量: " << base_particle_mass << " kg（固定值）" << std::endl;
     std::cout << "粒子直径: " << particle_diameter * 1000 << " mm" << std::endl;
-    std::cout << "单个粒子质量: " << particle_mass * 1000 << " g" << std::endl;
-    std::cout << "系统总质量: " << total_mass << " kg" << std::endl;
-    std::cout << "分批插入: " << num_batches << " 批" << std::endl;
-    std::cout << "每批粒子数: " << particles_per_batch << std::endl;
+    std::cout << "轻粒子单个质量: " << particle_mass_light * 1000 << " g" << std::endl;
+    std::cout << "重粒子单个质量: " << particle_mass_heavy * 1000 << " g" << std::endl;
+    std::cout << "质量比（轻:重）: 1:1" << std::endl;
+    std::cout << "预计轻粒子数: " << target_light_particles << std::endl;
+    std::cout << "预计重粒子数: " << target_heavy_particles << std::endl;
+    std::cout << "预计总粒子数: " << actual_particle_count << std::endl;
+    std::cout << "粒子数比（轻:重）: " << (float)target_light_particles/target_heavy_particles << ":1" << std::endl;
+    std::cout << "\n=== 明确分层批次分配 ===" << std::endl;
+    std::cout << "总批次数: " << num_batches << std::endl;
+    std::cout << "轻粒子批次数（前" << light_batches << "批）: " << light_batches << std::endl;
+    std::cout << "重粒子批次数（后" << heavy_batches << "批）: " << heavy_batches << std::endl;
+    std::cout << "轻粒子每批: " << light_particles_per_batch << " 个（余数: " << light_particles_remainder << "）" << std::endl;
+    std::cout << "重粒子每批: " << heavy_particles_per_batch << " 个（余数: " << heavy_particles_remainder << "）" << std::endl;
+    std::cout << "说明: 轻粒子先插入形成下层，重粒子后插入形成上层（不稳定配置）" << std::endl;
     std::cout << "================================\n" << std::endl;
 
     // 创建求解器实例
@@ -104,7 +145,7 @@ int main() {
         {"scale_factor_l", my_scale_factor}
     });
     
-    // 定义颗粒材料
+    // 定义统一的颗粒材料（通过质量差异实现密度差异）
     auto mat_type_particles = DEMSim.LoadMaterial({
         {"E", 1e7},
         {"nu", 0.3},
@@ -147,11 +188,11 @@ int main() {
 
     // 错误处理和安全限制
     DEMSim.SetErrorOutVelocity(20000.0);
-    DEMSim.SetErrorOutAvgContacts(50);
+    DEMSim.SetErrorOutAvgContacts(200);
 
     // 接触检测和性能设置
     DEMSim.SetCDUpdateFreq(40);
-    DEMSim.SetExpandSafetyAdder(2.0);  // 考虑搅拌器叶片的高速运动
+    DEMSim.SetExpandSafetyAdder(0.5);  // 考虑搅拌器叶片的高速运动
     
     // 高级接触检测设置
     DEMSim.SetCDNumStepsMaxDriftMultipleOfAvg(1.2);
@@ -182,244 +223,179 @@ int main() {
     DEMSim.SetFamilyPrescribedAngVel(FAMILY_MIXER, "0", "0", "0");
 
     // =========================================================================
-    // 5. 粒子生成设置（增加双重控制模式）
+    // 5. 粒子生成设置（明确分层的倒置双密度系统）
     // =========================================================================
 
     // --- 5.1 粒子/团簇模板 ---
     
-    // 模板生成参数
-    int num_template = 1;                              // 随机团簇模板总数
-    int min_sphere = 1;                                // 每个团簇最少球数
-    int max_sphere = 1;                                // 每个团簇最多球数
-    float min_rad = particle_radius;
-    float max_rad = particle_radius;            
-    float min_relpos = 0;
-    float max_relpos = 0;
-
-    // 创建数组存储团簇模板
-    std::vector<std::shared_ptr<DEMClumpTemplate>> clump_types;
-
-    // 生成随机团簇模板
-    for (int i = 0; i < num_template; i++) {
-        int num_sphere = rand() % (max_sphere - min_sphere + 1) + 1;
-        
-        // 定义团簇属性
-        float clump_mass = particle_mass * (float)num_sphere;  // 基于球数的质量
-        float3 MOI = make_float3(1, 1, 1) * 0.4 * clump_mass * pow(particle_radius, 2);  // 简化的惯性矩
-        
-        std::vector<float> radii;
-        std::vector<float3> relPos;
-        
-        // 生成球配置 (3D)
-        float3 seed_pos = make_float3(0);
-        for (int j = 0; j < num_sphere; j++) {
-            // 随机半径
-            radii.push_back(((float)rand() / RAND_MAX) * (max_rad - min_rad) + min_rad);
-            
-            // 相对于种子的位置 (完整3D)
-            float3 tmp;
-            if (j == 0) {
-                tmp = make_float3(0, 0, 0);
-            } else {
-                tmp.x = ((float)rand() / RAND_MAX) * (max_relpos - min_relpos) + min_relpos;
-                tmp.y = ((float)rand() / RAND_MAX) * (max_relpos - min_relpos) + min_relpos;
-                tmp.z = ((float)rand() / RAND_MAX) * (max_relpos - min_relpos) + min_relpos;
-            }
-            tmp += seed_pos;
-            relPos.push_back(tmp);
-            
-            // 更新种子位置
-            seed_pos = relPos[rand() % (j + 1)];
-        }
-        
-        // 创建并存储团簇模板
-        auto clump_ptr = DEMSim.LoadClumpType(clump_mass, MOI, radii, relPos, mat_type_particles);
-        clump_types.push_back(clump_ptr);
-    }
-
-    // --- 5.2 粒子放置与双重控制模式 ---
-
-    // ========== 控制模式选择 ==========
-    enum class ControlMode {
-        BY_COUNT,    // 按粒子数量控制
-        BY_MASS      // 按总质量控制
-    };
+    // 创建轻粒子模板（通过质量实现密度1000）
+    std::vector<std::shared_ptr<DEMClumpTemplate>> clump_types_light;
+    float3 light_MOI = make_float3(1, 1, 1) * 0.4 * particle_mass_light * pow(particle_radius, 2);
+    auto light_clump_ptr = DEMSim.LoadClumpType(
+        particle_mass_light,    // 较小的质量（密度1000）
+        light_MOI,
+        std::vector<float>(1, particle_radius),
+        std::vector<float3>(1, make_float3(0, 0, 0)),
+        mat_type_particles      // 使用统一的材料类型
+    );
+    clump_types_light.push_back(light_clump_ptr);
     
-    // 选择控制模式（可以根据需要修改）
-    ControlMode control_mode = ControlMode::BY_MASS;
-    
-    // 控制参数（自动使用SUP计算的值）
-    int target_particle_count = actual_particle_count;
-    float target_total_mass = base_particle_mass;
-    
-    // 根据控制模式计算最大粒子数
-    int max_particles;
-    float expected_total_mass;
-    
-    switch (control_mode) {
-        case ControlMode::BY_COUNT:
-            max_particles = target_particle_count;
-            expected_total_mass = target_particle_count * particle_mass;
-            std::cout << "\n=== 使用粒子数量控制模式 ===" << std::endl;
-            std::cout << "目标粒子数量: " << target_particle_count << std::endl;
-            std::cout << "预期总质量: " << expected_total_mass << " kg" << std::endl;
-            break;
-            
-        case ControlMode::BY_MASS:
-            max_particles = (int)(target_total_mass / particle_mass);
-            expected_total_mass = target_total_mass;
-            std::cout << "\n=== 使用总质量控制模式 ===" << std::endl;
-            std::cout << "目标总质量: " << target_total_mass << " kg" << std::endl;
-            std::cout << "预期粒子数量: " << max_particles << std::endl;
-            break;
-    }
+    // 创建重粒子模板（通过质量实现密度2000）
+    std::vector<std::shared_ptr<DEMClumpTemplate>> clump_types_heavy;
+    float3 heavy_MOI = make_float3(1, 1, 1) * 0.4 * particle_mass_heavy * pow(particle_radius, 2);
+    auto heavy_clump_ptr = DEMSim.LoadClumpType(
+        particle_mass_heavy,    // 较大的质量（密度2000）
+        heavy_MOI,
+        std::vector<float>(1, particle_radius),
+        std::vector<float3>(1, make_float3(0, 0, 0)),
+        mat_type_particles      // 使用统一的材料类型
+    );
+    clump_types_heavy.push_back(heavy_clump_ptr);
+
+    // --- 5.2 明确分层的粒子放置 ---
 
     // 设置泊松盘采样器
     PDSampler sampler(spacing);
 
     // =========================================================================
-    // 6. 分批插入粒子准备
+    // 6. 分批插入粒子准备（明确分层）
     // =========================================================================
 
-    // 存储每批的数据（使用vector的vector代替预分配的DEMClumpBatch）
+    // 存储每批的数据
     std::vector<std::vector<std::shared_ptr<DEMClumpTemplate>>> batch_templates(num_batches);
     std::vector<std::vector<float3>> batch_positions(num_batches);
     std::vector<std::vector<float3>> batch_velocities(num_batches);
     std::vector<std::vector<unsigned int>> batch_families(num_batches);
     
-    // 预生成所有粒子位置和类型
-    std::vector<std::shared_ptr<DEMClumpTemplate>> all_template_types;
-    std::vector<float3> all_positions;
-
     // 计算所需的初速度
-    float min_clearance = 5.0f * particle_diameter;  // 最小安全距离（5倍粒径）
-    float gravity = 9.81f;
-    float required_initial_velocity = (min_clearance - 0.5f * gravity * batch_interval_time * batch_interval_time) / batch_interval_time;
-    required_initial_velocity = -abs(0.2f);  // 固定初速度为-0.2m/s
+    float required_initial_velocity = -abs(0.2f);  // 固定初速度为-0.2m/s
 
     std::cout << "计算的初速度: " << required_initial_velocity << " m/s" << std::endl;
     
     // 统计变量
     int total_generated = 0;
+    int total_light_particles = 0;
+    int total_heavy_particles = 0;
     float current_total_mass = 0.0f;
-    int layer_count = 0;
-    int actual_batches_used = 0;  // 添加实际使用的批次数变量
 
-    // ========== 固定起始高度分批生成 ==========
+    std::cout << "\n开始为每批生成粒子位置（明确分层）..." << std::endl;
 
-    std::cout << "开始为每批生成粒子位置..." << std::endl;
-
-    for (int batch = 0; batch < num_batches; batch++) {
-        int batch_size = (batch == num_batches - 1) ? 
-                        particles_per_batch + remaining_particles : 
-                        particles_per_batch;
-        
-        // 根据控制模式限制批次大小
-        if (control_mode == ControlMode::BY_COUNT && total_generated + batch_size > max_particles) {
-            batch_size = max_particles - total_generated;
-        } else if (control_mode == ControlMode::BY_MASS && current_total_mass + batch_size * particle_mass > target_total_mass) {
-            batch_size = (int)((target_total_mass - current_total_mass) / particle_mass);
+    // ========== 第一阶段：生成轻粒子（前light_batches批） ==========
+    std::cout << "\n=== 第一阶段：生成轻粒子（密度1000，形成下层） ===" << std::endl;
+    
+    for (int batch = 0; batch < light_batches; batch++) {
+        // 计算当前批次应包含的轻粒子数
+        int batch_target = light_particles_per_batch;
+        if (batch == light_batches - 1) {
+            batch_target += light_particles_remainder;  // 最后一批包含余数
         }
-        
-        if (batch_size <= 0) break;
         
         // 为当前批次生成粒子
         int batch_generated = 0;
         float current_z = insertion_height;  // 从固定高度开始
-        int batch_layers = 0;
         
-        while (batch_generated < batch_size) {
+        while (batch_generated < batch_target) {
             float3 layer_center = make_float3(0, 0, current_z);
 
             // 在当前高度的圆柱区域内采样
             auto layer_xyz = sampler.SampleCylinderZ(layer_center, insertion_radius, 0);
             
             if (layer_xyz.empty()) {
-                std::cout << "  层 " << batch_layers << " 在 z=" << current_z/particle_diameter 
-                        << "d 处无法生成粒子，尝试下一层" << std::endl;
                 current_z += spacing;  // 向上移动一层
                 continue;
             }
             
-            // 添加当前层的粒子
-            int layer_particles = 0;
-            for (size_t i = 0; i < layer_xyz.size() && batch_generated < batch_size; i++) {
-                all_template_types.push_back(clump_types.at((total_generated + batch_generated) % num_template));
-                all_positions.push_back(layer_xyz[i]);
+            // 添加当前层的轻粒子
+            for (size_t i = 0; i < layer_xyz.size() && batch_generated < batch_target; i++) {
+                batch_templates[batch].push_back(clump_types_light[0]);
+                batch_positions[batch].push_back(layer_xyz[i]);
+                batch_velocities[batch].push_back(make_float3(0, 0, required_initial_velocity));
+                batch_families[batch].push_back(FAMILY_PARTICLES_LIGHT);
+                
                 batch_generated++;
-                layer_particles++;
-                current_total_mass += particle_mass;
+                total_light_particles++;
+                current_total_mass += particle_mass_light;
             }
             
-            batch_layers++;
             current_z += spacing;  // 向上移动到下一层
         }
         
         total_generated += batch_generated;
         
-        // 检查是否达到控制目标
-        if ((control_mode == ControlMode::BY_COUNT && total_generated >= max_particles) ||
-            (control_mode == ControlMode::BY_MASS && current_total_mass >= target_total_mass)) {
-            std::cout << "已达到控制目标，停止生成粒子" << std::endl;
-            actual_batches_used = batch + 1;  // 设置实际使用的批次数
-            break;
-        }
-        
-        actual_batches_used = batch + 1;  // 更新实际使用的批次数
+        std::cout << "轻粒子批次 " << batch + 1 << "/" << light_batches 
+                  << " 生成完成: " << batch_generated << " 个粒子" << std::endl;
     }
+    
+    std::cout << "第一阶段完成: 共生成 " << total_light_particles << " 个轻粒子" << std::endl;
 
-    // 将生成的粒子分配到各批次
-    int particle_index = 0;
-    for (int batch = 0; batch < actual_batches_used; batch++) {
-        int batch_size = (batch == actual_batches_used - 1 && actual_batches_used == num_batches) ? 
-                         particles_per_batch + remaining_particles : 
-                         particles_per_batch;
-        
-        if (particle_index + batch_size > total_generated) {
-            batch_size = total_generated - particle_index;
+    // ========== 第二阶段：生成重粒子（后heavy_batches批） ==========
+    std::cout << "\n=== 第二阶段：生成重粒子（密度2000，形成上层） ===" << std::endl;
+    
+    for (int batch = light_batches; batch < num_batches; batch++) {
+        // 计算当前批次应包含的重粒子数
+        int batch_index = batch - light_batches;
+        int batch_target = heavy_particles_per_batch;
+        if (batch_index == heavy_batches - 1) {
+            batch_target += heavy_particles_remainder;  // 最后一批包含余数
         }
         
-        if (batch_size <= 0) continue;
+        // 为当前批次生成粒子
+        int batch_generated = 0;
+        float current_z = insertion_height;  // 从固定高度开始
         
-        // 预分配空间
-        batch_templates[batch].reserve(batch_size);
-        batch_positions[batch].reserve(batch_size);
-        batch_velocities[batch].reserve(batch_size);
-        batch_families[batch].reserve(batch_size);
-        
-        // 准备当前批次的数据
-        for (int i = 0; i < batch_size; i++) {
-            if (particle_index >= total_generated) break;
+        while (batch_generated < batch_target) {
+            float3 layer_center = make_float3(0, 0, current_z);
+
+            // 在当前高度的圆柱区域内采样
+            auto layer_xyz = sampler.SampleCylinderZ(layer_center, insertion_radius, 0);
             
-            batch_templates[batch].push_back(all_template_types[particle_index]);
-            batch_positions[batch].push_back(all_positions[particle_index]);
-            batch_velocities[batch].push_back(make_float3(0, 0, required_initial_velocity));  // 初始向下速度
-            batch_families[batch].push_back(FAMILY_PARTICLES);
+            if (layer_xyz.empty()) {
+                current_z += spacing;  // 向上移动一层
+                continue;
+            }
             
-            particle_index++;
+            // 添加当前层的重粒子
+            for (size_t i = 0; i < layer_xyz.size() && batch_generated < batch_target; i++) {
+                batch_templates[batch].push_back(clump_types_heavy[0]);
+                batch_positions[batch].push_back(layer_xyz[i]);
+                batch_velocities[batch].push_back(make_float3(0, 0, required_initial_velocity));
+                batch_families[batch].push_back(FAMILY_PARTICLES_HEAVY);
+                
+                batch_generated++;
+                total_heavy_particles++;
+                current_total_mass += particle_mass_heavy;
+            }
+            
+            current_z += spacing;  // 向上移动到下一层
         }
         
-        std::cout << "批次 " << batch + 1 << " 准备完成，包含 " << batch_size << " 个粒子" << std::endl;
+        total_generated += batch_generated;
+        
+        std::cout << "重粒子批次 " << batch_index + 1 << "/" << heavy_batches 
+                  << " 生成完成: " << batch_generated << " 个粒子" << std::endl;
     }
+    
+    std::cout << "第二阶段完成: 共生成 " << total_heavy_particles << " 个重粒子" << std::endl;
 
     // 输出最终统计信息
-    std::cout << "\n=== 粒子生成准备完成 ===" << std::endl;
-    std::cout << "生成层数: " << layer_count << std::endl;
+    std::cout << "\n=== 粒子生成准备完成（明确分层倒置配置） ===" << std::endl;
     std::cout << "实际准备粒子数: " << total_generated << std::endl;
+    std::cout << "  - 轻粒子数（密度1000，前" << light_batches << "批）: " << total_light_particles << std::endl;
+    std::cout << "  - 重粒子数（密度2000，后" << heavy_batches << "批）: " << total_heavy_particles << std::endl;
+    std::cout << "轻粒子总质量: " << total_light_particles * particle_mass_light << " kg" << std::endl;
+    std::cout << "重粒子总质量: " << total_heavy_particles * particle_mass_heavy << " kg" << std::endl;
     std::cout << "实际总质量: " << current_total_mass << " kg" << std::endl;
-    std::cout << "实际使用批次数: " << actual_batches_used << std::endl;
+    std::cout << "实际质量比（轻:重）: " << (total_light_particles * particle_mass_light) / (total_heavy_particles * particle_mass_heavy) << ":1" << std::endl;
+    std::cout << "实际粒子数比（轻:重）: " << (float)total_light_particles / total_heavy_particles << ":1" << std::endl;
     
-    switch (control_mode) {
-        case ControlMode::BY_COUNT:
-            std::cout << "目标粒子数: " << target_particle_count << std::endl;
-            std::cout << "完成率: " << (total_generated * 100.0 / target_particle_count) << "%" << std::endl;
-            break;
-            
-        case ControlMode::BY_MASS:
-            std::cout << "目标总质量: " << target_total_mass << " kg" << std::endl;
-            std::cout << "完成率: " << (current_total_mass / target_total_mass * 100) << "%" << std::endl;
-            break;
-    }
+    float mass_error = abs((total_light_particles * particle_mass_light - total_heavy_particles * particle_mass_heavy)) 
+                      / (current_total_mass) * 100.0f;
+    std::cout << "质量平衡误差: " << mass_error << "%" << std::endl;
+    
+    std::cout << "\n重要说明: " << std::endl;
+    std::cout << "1. 轻粒子（密度1000）将在前" << light_batches << "批中插入，形成下层" << std::endl;
+    std::cout << "2. 重粒子（密度2000）将在后" << heavy_batches << "批中插入，形成上层" << std::endl;
+    std::cout << "3. 这是一个不稳定配置（重在上，轻在下），用于研究混合过程" << std::endl;
     std::cout << "================" << std::endl;
 
     // =========================================================================
@@ -434,8 +410,13 @@ int main() {
     // =========================================================================
     
     std::ostringstream dir_name;
-    dir_name << "SUPMixerOutput_f" << my_scale_factor 
-         << "c" << std::setw(3) << std::setfill('0') << static_cast<int>(particle_cohesion * 100);
+    // dir_name << "SUPMixerInverted_ClearLayers_f" << my_scale_factor 
+    //          << "_light1000x" << light_batches << "batch"
+    //          << "_heavy2000x" << heavy_batches << "batch";
+
+    dir_name << "SUPMixerOutput_ClearLayers_f" << my_scale_factor 
+             << "se" << std::setw(3) << std::setfill('0') << static_cast<int>(particle_cohesion * 100);
+    
     path out_dir = current_path() / dir_name.str();
     if (exists(out_dir)) {
         // Directory exists, remove all files inside
@@ -461,7 +442,7 @@ int main() {
     // 主仿真循环
     for (int frame = 0; frame <= frames_total; frame++) {
         // 在前N帧分批插入粒子
-        if (frame % frames_between_batches == 0 && current_batch < actual_batches_used) {
+        if (frame % frames_between_batches == 0 && current_batch < num_batches) {
             // 跳过空批次（额外的安全检查）
             if (batch_templates[current_batch].empty()) {
                 current_batch++;
@@ -485,7 +466,18 @@ int main() {
                 float z_offset = dynamic_insertion_height - insertion_height;
                 batch_positions[current_batch][i].z += z_offset;
             }
-            std::cout << "\n=== 第 " << frame << " 帧：插入批次 " << current_batch + 1 << " ===" << std::endl;
+            
+            // 判断当前批次类型
+            std::string batch_type = (current_batch < light_batches) ? "轻粒子" : "重粒子";
+            int batch_phase_index = (current_batch < light_batches) ? 
+                                    current_batch + 1 : 
+                                    current_batch - light_batches + 1;
+            int total_phase_batches = (current_batch < light_batches) ? 
+                                      light_batches : 
+                                      heavy_batches;
+            
+            std::cout << "\n=== 第 " << frame << " 帧：插入" << batch_type 
+                     << "批次 " << batch_phase_index << "/" << total_phase_batches << " ===" << std::endl;
             
             // 获取当前批次的粒子数
             size_t batch_particle_count = batch_templates[current_batch].size();
@@ -500,7 +492,8 @@ int main() {
                 
                 // 添加当前批次
                 auto clump_tracker = DEMSim.AddClumps(current_batch_data);
-                std::cout << "成功插入 " << batch_particle_count << " 个粒子" << std::endl;
+                std::cout << "成功插入 " << batch_particle_count << " 个" << batch_type << std::endl;
+                std::cout << "动态插入高度: " << dynamic_insertion_height * 1000 << " mm" << std::endl;
                 
                 // 更新仿真系统
                 DEMSim.UpdateClumps();
@@ -513,13 +506,8 @@ int main() {
         if (frame % 5 == 0) {
             // 生成输出文件名
             char filename[200];
-            sprintf(filename, "compression_output_%04d.csv", frame);
+            sprintf(filename, "clear_layer_output_%04d.csv", frame);
             DEMSim.WriteClumpFile(out_dir / filename);
-
-            // // 同时输出mesh文件
-            // char meshfilename[200];
-            // sprintf(meshfilename, "compression_plate_%04d.vtk", frame);
-            // DEMSim.WriteMeshFile(out_dir / meshfilename);
         
             // 进度报告
             std::cout << "帧: " << frame << " - 输出文件已保存 - 当前系统中粒子数: " << DEMSim.GetNumClumps() << std::endl;
@@ -543,10 +531,13 @@ int main() {
     std::chrono::duration<double> time_sec = std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
     std::cout << "\n仿真完成, 耗时: " << time_sec.count() << " 秒" << std::endl;
     
-    // 输出控制模式统计
-    std::cout << "\n=== 最终统计 ===" << std::endl;
-    std::cout << "使用控制模式: " << (control_mode == ControlMode::BY_COUNT ? "粒子数量控制" : "总质量控制") << std::endl;
+    // 输出最终统计
+    std::cout << "\n=== 最终统计（明确分层倒置配置） ===" << std::endl;
     std::cout << "最终粒子数: " << DEMSim.GetNumClumps() << std::endl;
+    std::cout << "轻粒子数（前" << light_batches << "批插入）: " << total_light_particles << std::endl;
+    std::cout << "重粒子数（后" << heavy_batches << "批插入）: " << total_heavy_particles << std::endl;
+    std::cout << "最终系统总质量: " << current_total_mass << " kg" << std::endl;
+    std::cout << "配置说明: 明确分层，轻粒子先插入形成下层，重粒子后插入形成上层" << std::endl;
     
     DEMSim.ShowTimingStats();
     
@@ -557,6 +548,6 @@ int main() {
     DEMSim.ShowMemStats();
     std::cout << "----------------------------------------" << std::endl;
 
-    std::cout << "SUPdemo_Mixer_Part1 (双重控制模式) 退出..." << std::endl;
+    std::cout << "SUPdemo_Mixer_Part1 (ClearLayer) 退出..." << std::endl;
     return 0;
 }
