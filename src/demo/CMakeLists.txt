@@ -46,6 +46,8 @@ SET(DEMOS
 		SUPdemo_BulkCompress
 		SUPdemo_Mixer_Part1
 		SUPdemo_Mixer_Part2
+		SUPdemo_Mixer_Dual_Part1
+		SUPdemo_Mixer_Dual_Part2
 )
 
 # ------------------------------------------------------------------------------
