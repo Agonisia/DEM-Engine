@@ -26,16 +26,16 @@ int main() {
     // =========================================================================
     
     // === SUP模型核心参数（集中管理） ===
-    const float my_scale_factor = 4.0f;                    // SUP缩放因子
+    const float my_scale_factor = 1.0f;                    // SUP缩放因子
     const float scale_force_index = 2.0f;                  // 力的缩放指数
-    const float base_particle_mass = 0.0934f;              // 基准系统总质量：0.0934kg（更新值）
+    const float base_particle_mass = 0.0458f;              // 基准系统总质量：0.072kg（更新值）
     
     // === 大小粒子基准直径（factor=1时） ===
-    const float base_small_diameter = 0.00025f;            // 小粒子基准直径：0.25mm
-    const float base_large_diameter = 0.000375f;           // 大粒子基准直径：0.375mm（1.5倍）
+    const float base_small_diameter = 0.0003f;             // 小粒子基准直径：0.3mm
+    const float base_large_diameter = 0.0005f;             // 大粒子基准直径：0.5mm（1.6倍）
     
     // === 粒子密度（统一密度） ===
-    const float particle_density = 1500.0f;                // 统一密度：1500 kg/m³
+    const float particle_density = 1000.0f;                // 统一密度：1000 kg/m³
     const float particle_cohesion = 0.0f;                  // 颗粒间粘聚力
 
     // === 时间参数 ===
@@ -53,24 +53,42 @@ int main() {
     const float large_diameter = base_large_diameter * my_scale_factor;
     const float large_radius = large_diameter / 2.0f;
     
-    // 小粒子质量
+    // 小粒子质量（缩放后）
     const float particle_mass_small = particle_density * (4.0/3.0) * 3.14159265359 * 
                                       pow(small_radius, 3);
-    // 大粒子质量
+    // 大粒子质量（缩放后）
     const float particle_mass_large = particle_density * (4.0/3.0) * 3.14159265359 * 
                                       pow(large_radius, 3);
     
-    // === 基于基准质量的粒子数计算（1:1质量比） ===
-    const float target_total_mass = base_particle_mass;  // 固定系统总质量：0.0934kg
+    // === SUP模型粒子数缩放 ===
+    // 在SUP模型中，当半径按l缩放时，为保持总质量不变：
+    // - 单个粒子质量按l³缩放
+    // - 粒子数量按1/l³缩放
+    const int scale_factor_cubed = (int)pow(my_scale_factor, 3);
     
-    // 基于1:1质量比例计算粒子数
-    const float target_small_mass = target_total_mass / 2.0f;
+    // 基准系统（factor=1时）的粒子数计算
+    const float base_small_mass = particle_density * (4.0/3.0) * 3.14159265359 * 
+                                  pow(base_small_diameter/2.0f, 3);
+    const float base_large_mass = particle_density * (4.0/3.0) * 3.14159265359 * 
+                                  pow(base_large_diameter/2.0f, 3);
+    
+    // 基准系统的粒子数（factor=1时）
+    const float target_total_mass = base_particle_mass;
+    const float target_small_mass = target_total_mass / 2.0f;  // 1:1质量比
     const float target_large_mass = target_total_mass / 2.0f;
     
-    // 计算所需的粒子数量
-    const int target_small_particles = (int)(target_small_mass / particle_mass_small);
-    const int target_large_particles = (int)(target_large_mass / particle_mass_large);
+    const int base_small_particles = (int)(target_small_mass / base_small_mass);
+    const int base_large_particles = (int)(target_large_mass / base_large_mass);
+    
+    // SUP缩放后的粒子数（按1/l³缩放）
+    const int target_small_particles = (int)(base_small_particles / scale_factor_cubed);
+    const int target_large_particles = (int)(base_large_particles / scale_factor_cubed);
     const int actual_particle_count = target_small_particles + target_large_particles;
+    
+    // 验证质量守恒
+    const float actual_small_mass = target_small_particles * particle_mass_small;
+    const float actual_large_mass = target_large_particles * particle_mass_large;
+    const float actual_total_mass = actual_small_mass + actual_large_mass;
     
     // === 明确分层批次分配 ===
     const float small_ratio = (float)target_small_particles / actual_particle_count;
@@ -87,11 +105,11 @@ int main() {
     const int large_particles_remainder = target_large_particles % large_batches;
 
     // === 仿真域参数（扩大版） ===
-    const float domain_size = 0.15f;                       // 150mm × 150mm 水平尺寸（增大）
-    const float wall_radius = 0.060f;                      // 圆柱墙体半径60mm（更新值）
+    const float domain_size = 0.1f;                       // 150mm × 150mm 水平尺寸（增大）
+    const float wall_radius = 0.042f;                      // 圆柱墙体半径60mm（更新值）
     const float plate_bottom = 0.0f;                       // Z坐标：底板位置
-    const float insertion_radius = 0.056f;                 // 插入区域半径56mm（略小于墙体）
-    const float insertion_height = 0.050f;                 // 起始高度 50mm
+    const float insertion_radius = 0.038f;                 // 插入区域半径56mm（略小于墙体）
+    const float insertion_height = 0.042f;                 // 起始高度 50mm
     const float spacing_small = small_diameter * 1.5f;     // 小粒子间距
     const float spacing_large = large_diameter * 1.5f;     // 大粒子间距
     
@@ -104,15 +122,19 @@ int main() {
     std::cout << "\n========== SUP模型参数（大小粒子双层系统） ==========" << std::endl;
     std::cout << "缩放因子 l: " << my_scale_factor << std::endl;
     std::cout << "基准系统总质量: " << base_particle_mass << " kg（固定值）" << std::endl;
-    std::cout << "小粒子直径: " << small_diameter * 1000 << " mm" << std::endl;
-    std::cout << "大粒子直径: " << large_diameter * 1000 << " mm（1.5倍小粒子）" << std::endl;
+    std::cout << "小粒子直径: " << small_diameter * 1000 << " mm (基准: " << base_small_diameter * 1000 << " mm)" << std::endl;
+    std::cout << "大粒子直径: " << large_diameter * 1000 << " mm (基准: " << base_large_diameter * 1000 << " mm)" << std::endl;
     std::cout << "统一密度: " << particle_density << " kg/m³" << std::endl;
     std::cout << "小粒子单个质量: " << particle_mass_small * 1000 << " g" << std::endl;
     std::cout << "大粒子单个质量: " << particle_mass_large * 1000 << " g" << std::endl;
-    std::cout << "质量比（小:大）: 1:1" << std::endl;
-    std::cout << "预计小粒子数: " << target_small_particles << std::endl;
-    std::cout << "预计大粒子数: " << target_large_particles << std::endl;
-    std::cout << "预计总粒子数: " << actual_particle_count << std::endl;
+    std::cout << "\n=== SUP缩放效应 ===" << std::endl;
+    std::cout << "基准小粒子数(l=1): " << base_small_particles << std::endl;
+    std::cout << "基准大粒子数(l=1): " << base_large_particles << std::endl;
+    std::cout << "缩放后小粒子数: " << target_small_particles << " (缩放: 1/" << scale_factor_cubed << ")" << std::endl;
+    std::cout << "缩放后大粒子数: " << target_large_particles << " (缩放: 1/" << scale_factor_cubed << ")" << std::endl;
+    std::cout << "缩放后总粒子数: " << actual_particle_count << std::endl;
+    std::cout << "验证总质量: " << actual_total_mass << " kg (目标: " << target_total_mass << " kg)" << std::endl;
+    std::cout << "质量误差: " << abs(actual_total_mass - target_total_mass)/target_total_mass * 100 << "%" << std::endl;
     std::cout << "粒子数比（小:大）: " << (float)target_small_particles/target_large_particles << ":1" << std::endl;
     std::cout << "\n=== 明确分层批次分配 ===" << std::endl;
     std::cout << "总批次数: " << num_batches << std::endl;
@@ -223,7 +245,7 @@ int main() {
         mat_type_mixer
     );
     std::cout << "搅拌器三角形网格数: " << mixer->GetNumTriangles() << std::endl;
-    mixer->Scale(make_float3(1.43, 1.43, 1.43)); // 60mm / 42mm ≈ 1.4286
+    // mixer->Scale(make_float3(1.43, 1.43, 1.43)); // 60mm / 42mm ≈ 1.4286
 
     // 设置搅拌器的预定义角速度（绕z轴旋转，初始不旋转）
     DEMSim.SetFamilyPrescribedAngVel(FAMILY_MIXER, "0", "0", "0");
@@ -392,16 +414,14 @@ int main() {
     std::cout << "小粒子总质量: " << total_small_particles * particle_mass_small << " kg" << std::endl;
     std::cout << "大粒子总质量: " << total_large_particles * particle_mass_large << " kg" << std::endl;
     std::cout << "实际总质量: " << current_total_mass << " kg" << std::endl;
+    std::cout << "目标总质量: " << target_total_mass << " kg" << std::endl;
+    std::cout << "质量守恒误差: " << abs(current_total_mass - target_total_mass)/target_total_mass * 100 << "%" << std::endl;
     std::cout << "实际质量比（小:大）: " << (total_small_particles * particle_mass_small) / (total_large_particles * particle_mass_large) << ":1" << std::endl;
     std::cout << "实际粒子数比（小:大）: " << (float)total_small_particles / total_large_particles << ":1" << std::endl;
     
-    float mass_error = abs((total_small_particles * particle_mass_small - total_large_particles * particle_mass_large)) 
-                      / (current_total_mass) * 100.0f;
-    std::cout << "质量平衡误差: " << mass_error << "%" << std::endl;
-    
     std::cout << "\n重要说明: " << std::endl;
-    std::cout << "1. 小粒子（0.25mm）将在前" << small_batches << "批中插入，形成下层" << std::endl;
-    std::cout << "2. 大粒子（0.375mm）将在后" << large_batches << "批中插入，形成上层" << std::endl;
+    std::cout << "1. 小粒子（" << small_diameter * 1000 << "mm）将在前" << small_batches << "批中插入，形成下层" << std::endl;
+    std::cout << "2. 大粒子（" << large_diameter * 1000 << "mm）将在后" << large_batches << "批中插入，形成上层" << std::endl;
     std::cout << "3. 统一密度: " << particle_density << " kg/m³" << std::endl;
     std::cout << "4. 搅拌器空间半径: " << wall_radius * 1000 << " mm" << std::endl;
     std::cout << "================" << std::endl;

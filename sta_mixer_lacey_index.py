@@ -3,6 +3,10 @@
 SUP Mixer Lacey Index Analysis - Multi-Directory Comparison Version
 Analyzes mixing quality in DEM mixer simulations using Lacey mixing index
 Supports multiple scale factors and surface energy values comparison
+Supports three directory formats:
+  - SUPMixerOutput_f{scale_factor}se{surface_energy}
+  - SUPMixerOutput_SizeDiff_f{scale_factor}se{surface_energy}
+  - SUPMixerOutput_DualDensity_f{scale_factor}se{surface_energy}
 """
 
 import os
@@ -25,14 +29,20 @@ class Config:
     """Configuration parameter management for Lacey index analysis"""
     def __init__(self, scale_factor: int = 4, surface_energy: str = "000", 
                  base_path: str = ".", enable_plotting: bool = False,
-                 steady_state_fraction: float = 0.5):
+                 steady_state_fraction: float = 0.5, experiment_type: str = ""):
         self.scale_factor = scale_factor
         self.surface_energy = surface_energy
         self.base_path = Path(base_path)
+        self.experiment_type = experiment_type  # Can be '', 'SizeDiff', or 'DualDensity'
         
-        # Construct input and output paths
-        self.input_path = self.base_path / f'SUPMixerOutput_f{scale_factor}se{surface_energy}'
-        self.output_base = Path(f'lacey_results/se{surface_energy}/')
+        # Construct input and output paths based on experiment type
+        if experiment_type:
+            self.input_path = self.base_path / f'SUPMixerOutput_{experiment_type}_f{scale_factor}se{surface_energy}'
+        else:
+            self.input_path = self.base_path / f'SUPMixerOutput_f{scale_factor}se{surface_energy}'
+        
+        # Keep output path structure same as original
+        self.output_base = Path(f'sta_results/lacey_results/se{surface_energy}/')
         self.output_path = self.output_base / f'f{scale_factor}/'
         
         # Frame time interval based on scale factor
@@ -94,24 +104,44 @@ class MultiDirectoryConfig:
         self.directories = self.find_matching_directories()
         
     def find_matching_directories(self) -> List[Dict]:
-        """Find all directories matching the pattern"""
-        pattern = f'SUPMixerOutput_f*se*'
-        if self.filter_cohesion:
-            pattern = f'SUPMixerOutput_f*se{self.filter_cohesion}'
-        
+        """Find all directories matching the patterns"""
         dirs = []
-        for path in self.base_path.glob(pattern):
-            if path.is_dir():
-                match = re.match(r'SUPMixerOutput_f(\d+)se(\d+)', path.name)
-                if match:
-                    dirs.append({
-                        'path': path,
-                        'scale_factor': int(match.group(1)),
-                        'surface_energy': match.group(2),
-                        'name': path.name
-                    })
         
-        return sorted(dirs, key=lambda x: (x['scale_factor'], x['surface_energy']))
+        # Define patterns for three directory formats
+        patterns = [
+            ('', r'SUPMixerOutput_f(\d+)se(\d+)$'),  # Original format
+            ('SizeDiff', r'SUPMixerOutput_SizeDiff_f(\d+)se(\d+)$'),  # Size difference
+            ('DualDensity', r'SUPMixerOutput_DualDensity_f(\d+)se(\d+)$'),  # Dual density
+        ]
+        
+        # Search for each pattern
+        for exp_type, pattern in patterns:
+            # Build glob pattern based on filter
+            if self.filter_cohesion:
+                if exp_type:
+                    glob_pattern = f'SUPMixerOutput_{exp_type}_f*se{self.filter_cohesion}'
+                else:
+                    glob_pattern = f'SUPMixerOutput_f*se{self.filter_cohesion}'
+            else:
+                if exp_type:
+                    glob_pattern = f'SUPMixerOutput_{exp_type}_f*se*'
+                else:
+                    glob_pattern = f'SUPMixerOutput_f*se*'
+            
+            for path in self.base_path.glob(glob_pattern):
+                if path.is_dir():
+                    match = re.match(pattern, path.name)
+                    if match:
+                        dirs.append({
+                            'path': path,
+                            'scale_factor': int(match.group(1)),
+                            'surface_energy': match.group(2),
+                            'experiment_type': exp_type,
+                            'name': path.name
+                        })
+        
+        # Sort by experiment type, then scale factor, then surface energy
+        return sorted(dirs, key=lambda x: (x['experiment_type'], x['scale_factor'], x['surface_energy']))
 
 # ======================== JIT Accelerated Functions ========================
 @jit(nopython=True, parallel=True)
@@ -551,7 +581,8 @@ class MultiDirectoryLaceyAnalysis:
                     surface_energy=dir_info['surface_energy'],
                     base_path=self.multi_config.base_path,
                     enable_plotting=self.multi_config.enable_plotting,
-                    steady_state_fraction=self.multi_config.steady_state_fraction
+                    steady_state_fraction=self.multi_config.steady_state_fraction,
+                    experiment_type=dir_info['experiment_type']
                 )
                 
                 # Process directory
@@ -637,6 +668,19 @@ class MultiDirectoryLaceyAnalysis:
                 f.write("  ★★☆☆☆ Poor mixing (0.65 ≤ M < 0.75)\n")
             else:
                 f.write("  ★☆☆☆☆ Very poor mixing (M < 0.65)\n")
+            
+            # Add mixing quality assessment
+            f.write("\nMixing Quality Assessment:\n")
+            if steady_state['mean_lacey'] >= 0.95:
+                f.write("  ★★★★★ Excellent mixing (M ≥ 0.95)\n")
+            elif steady_state['mean_lacey'] >= 0.85:
+                f.write("  ★★★★☆ Good mixing (0.85 ≤ M < 0.95)\n")
+            elif steady_state['mean_lacey'] >= 0.75:
+                f.write("  ★★★☆☆ Moderate mixing (0.75 ≤ M < 0.85)\n")
+            elif steady_state['mean_lacey'] >= 0.65:
+                f.write("  ★★☆☆☆ Poor mixing (0.65 ≤ M < 0.75)\n")
+            else:
+                f.write("  ★☆☆☆☆ Very poor mixing (M < 0.65)\n")
         
         print(f"  ✔ Results saved to: {config.output_path}")
     
@@ -648,9 +692,9 @@ class MultiDirectoryLaceyAnalysis:
         
         # Create comparison directory
         if self.multi_config.filter_cohesion:
-            comparison_dir = Path(f'lacey_results/se{self.multi_config.filter_cohesion}/comparison/')
+            comparison_dir = Path(f'sta_results/lacey_results/se{self.multi_config.filter_cohesion}/comparison/')
         else:
-            comparison_dir = Path('lacey_results/comparison/')
+            comparison_dir = Path('sta_results/lacey_results/comparison/')
         comparison_dir.mkdir(parents=True, exist_ok=True)
         
         # Collect comparison data
@@ -711,14 +755,14 @@ def main():
     Main program for Lacey index analysis
     """
     # ==================== Configurable Parameters ====================
-    base_path = "build"  # Search directory
-    filter_cohesion = "020"  # Only process cohesion=0 data, set to None for all
+    base_path = "/media/huyuze/Fanxiang/DEME_Data/backup251115"  # Search directory
+    filter_cohesion = "080"  # Only process specific cohesion data, set to None for all
     enable_plotting = True  # Generate plots
     steady_state_fraction = 1  # Use last 50% of data for steady state
     
     # ==================== Run Analysis ====================
     print_header("SUP MIXER LACEY INDEX ANALYSIS")
-    print("Version: Multi-directory comparison with time series")
+    print("Version: Multi-directory comparison with three format support")
     start_time = datetime.datetime.now()
     
     try:
@@ -732,7 +776,10 @@ def main():
         
         if not multi_config.directories:
             print("✗ No matching directories found!")
-            print(f"  Searched for: SUPMixerOutput_f*se{filter_cohesion if filter_cohesion else '*'}")
+            print(f"  Searched for patterns:")
+            print(f"    - SUPMixerOutput_f*se{filter_cohesion if filter_cohesion else '*'}")
+            print(f"    - SUPMixerOutput_SizeDiff_f*se{filter_cohesion if filter_cohesion else '*'}")
+            print(f"    - SUPMixerOutput_DualDensity_f*se{filter_cohesion if filter_cohesion else '*'}")
             print(f"  In path: {base_path}")
             return
         
@@ -758,9 +805,9 @@ def main():
         print(f"  Directories Processed: {len(analysis.results)}")
         
         if filter_cohesion:
-            print(f"  Results saved to: lacey_results/se{filter_cohesion}/")
+            print(f"  Results saved to: sta_results/lacey_results/se{filter_cohesion}/")
         else:
-            print(f"  Results saved to: lacey_results/")
+            print(f"  Results saved to: sta_results/lacey_results/")
         
         # Print summary of mixing quality
         print("\n  Mixing Quality Summary:")

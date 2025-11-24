@@ -4,6 +4,7 @@ SUP Mixer Velocity Distribution Analysis - Multi-Directory Comparison Version
 Analyzes particle velocity distributions in DEM mixer simulations with SUP models
 Supports multiple surface energy values comparison
 Fixed: Correct frame time intervals for different scale factors
+Updated: Support for multiple directory naming formats (Standard, SizeDiff, DualDensity)
 """
 
 import os
@@ -26,18 +27,27 @@ class Config:
     """Configuration parameter management for multi-directory analysis"""
     def __init__(self, scale_factor: int = 4, surface_energy: str = "000", 
                  base_path: str = ".", enable_plotting: bool = False,
-                 steady_state_fraction: float = 0.5):
+                 steady_state_fraction: float = 0.5, dir_type: str = "standard"):
         self.scale_factor = scale_factor
         self.surface_energy = surface_energy
         self.base_path = Path(base_path)
+        self.dir_type = dir_type  # 'standard', 'SizeDiff', or 'DualDensity'
         
-        # Construct input and output paths
-        self.input_path = self.base_path / f'SUPMixerOutput_f{scale_factor}se{surface_energy}'
-        self.output_base = Path(f'sta_results/se{surface_energy}/')
+        # Construct input and output paths based on directory type
+        if dir_type == "standard":
+            self.input_path = self.base_path / f'SUPMixerOutput_f{scale_factor}se{surface_energy}'
+        elif dir_type == "SizeDiff":
+            self.input_path = self.base_path / f'SUPMixerOutput_SizeDiff_f{scale_factor}se{surface_energy}'
+        elif dir_type == "DualDensity":
+            self.input_path = self.base_path / f'SUPMixerOutput_DualDensity_f{scale_factor}se{surface_energy}'
+        else:
+            raise ValueError(f"Unknown directory type: {dir_type}")
+            
+        # Output path includes directory type
+        self.output_base = Path(f'sta_results/{dir_type}_se{surface_energy}/')
         self.output_path = self.output_base / f'f{scale_factor}/'
         
-        # ===== Fix1: Adding frame time interval parameter =====
-        # determine the output interval based on the scale factor
+        # Frame time interval parameter
         if scale_factor == 1:
             self.frame_dt = 5e-3  # f1 using 5ms interval (5000 time steps)
         else:
@@ -74,15 +84,16 @@ class Config:
         self.output_path.mkdir(parents=True, exist_ok=True)
         
     def __str__(self):
-        return f"Config(f{self.scale_factor}se{self.surface_energy}, frame_dt={self.frame_dt*1000:.1f}ms)"
+        return f"Config({self.dir_type}_f{self.scale_factor}se{self.surface_energy}, frame_dt={self.frame_dt*1000:.1f}ms)"
 
 class MultiDirectoryConfig:
     """Configuration for multi-directory comparison analysis"""
     def __init__(self, base_path: str = ".", filter_cohesion: str = "000",
                  use_interpolation: bool = False, enable_plotting: bool = True,
-                 steady_state_fraction: float = 0.5):
+                 steady_state_fraction: float = 0.5, filter_type: Optional[str] = None):
         self.base_path = Path(base_path)
         self.filter_cohesion = filter_cohesion
+        self.filter_type = filter_type  # Filter for specific directory type
         self.use_interpolation = use_interpolation
         self.enable_plotting = enable_plotting
         self.steady_state_fraction = steady_state_fraction
@@ -91,28 +102,50 @@ class MultiDirectoryConfig:
         self.directories = self.find_matching_directories()
         
     def find_matching_directories(self) -> List[Dict]:
-        """Find all directories matching the pattern"""
-        pattern = f'SUPMixerOutput_f*se*'
-        if self.filter_cohesion:
-            pattern = f'SUPMixerOutput_f*se{self.filter_cohesion}'
-        
+        """Find all directories matching the patterns"""
         dirs = []
-        for path in self.base_path.glob(pattern):
-            if path.is_dir():
-                # Extract scale_factor and surface_energy from directory name
-                match = re.match(r'SUPMixerOutput_f(\d+)se(\d+)', path.name)
+        
+        # Define patterns for three directory types
+        patterns = [
+            ('standard', r'SUPMixerOutput_f(\d+)se(\d+)$'),
+            ('SizeDiff', r'SUPMixerOutput_SizeDiff_f(\d+)se(\d+)$'),
+            ('DualDensity', r'SUPMixerOutput_DualDensity_f(\d+)se(\d+)$')
+        ]
+        
+        # Search for all directories
+        for path in self.base_path.iterdir():
+            if not path.is_dir():
+                continue
+                
+            # Try to match each pattern
+            for dir_type, pattern in patterns:
+                match = re.match(pattern, path.name)
                 if match:
+                    scale_factor = int(match.group(1))
+                    surface_energy = match.group(2)
+                    
+                    # Apply filters
+                    if self.filter_cohesion and surface_energy != self.filter_cohesion:
+                        continue
+                    if self.filter_type and dir_type != self.filter_type:
+                        continue
+                    
                     dirs.append({
                         'path': path,
-                        'scale_factor': int(match.group(1)),
-                        'surface_energy': match.group(2),
+                        'scale_factor': scale_factor,
+                        'surface_energy': surface_energy,
+                        'dir_type': dir_type,
                         'name': path.name
                     })
+                    break
         
-        return sorted(dirs, key=lambda x: (x['scale_factor'], x['surface_energy']))
+        # Sort by directory type, then scale_factor, then surface_energy
+        type_order = {'standard': 0, 'SizeDiff': 1, 'DualDensity': 2}
+        return sorted(dirs, key=lambda x: (type_order.get(x['dir_type'], 99), 
+                                          x['scale_factor'], 
+                                          x['surface_energy']))
 
 # ======================== JIT Accelerated Functions ========================
-# ===== Fix2: Using frame_dt instead of dt in angle calculation functions =====
 @jit(nopython=True, parallel=True)
 def compute_angles_vectorized(x: np.ndarray, y: np.ndarray, 
                              frame_numbers: np.ndarray, 
@@ -130,8 +163,8 @@ def compute_angles_vectorized(x: np.ndarray, y: np.ndarray,
         # Calculate polar angle
         polar_angles[i] = np.arctan2(y[i], x[i])
         
-        # Calculate rotor angle - 使用frame_dt计算实际物理时间
-        time = frame_numbers[i] * frame_dt  # 修改：使用frame_dt而不是dt
+        # Calculate rotor angle - using frame_dt to calculate actual physical time
+        time = frame_numbers[i] * frame_dt  # Fixed: using frame_dt instead of dt
         rotor_angles[i] = (RPS * time * 2 * np.pi) % (2 * np.pi)
         
         # Calculate relative angle
@@ -213,9 +246,9 @@ class MixerDataProcessor:
         start_idx = int(total_frames * (1 - self.config.steady_state_fraction))
         steady_state_frames = all_frames[start_idx:]
         
-        print(f"  ✔ Total frames found: {total_frames}")
-        print(f"  ✔ Using last {self.config.steady_state_fraction:.0%} ({len(steady_state_frames)} frames) for steady state")
-        print(f"  ✔ Frame time interval: {self.config.frame_dt*1000:.1f} ms")
+        print(f"  ✓ Total frames found: {total_frames}")
+        print(f"  ✓ Using last {self.config.steady_state_fraction:.0%} ({len(steady_state_frames)} frames) for steady state")
+        print(f"  ✓ Frame time interval: {self.config.frame_dt*1000:.1f} ms")
         
         # Filter by frame_skip
         files_to_read = []
@@ -239,8 +272,8 @@ class MixerDataProcessor:
         """Load mixer data (steady state only)"""
         files_to_read = self.get_files_to_read(max_files)
         
-        print(f"  ✔ Will process {len(files_to_read)} files")
-        print(f"  ✔ Reading every {self.config.frame_skip} frames")
+        print(f"  ✓ Will process {len(files_to_read)} files")
+        print(f"  ✓ Reading every {self.config.frame_skip} frames")
         print("-" * 40)
         
         # Check first file structure
@@ -249,7 +282,7 @@ class MixerDataProcessor:
         has_velocity = 'velocity' in first_df.columns
         
         if has_velocity:
-            print("  ✔ Detected pre-processed files with velocity column")
+            print("  ✓ Detected pre-processed files with velocity column")
         else:
             print("  ⚠ No velocity column found - will calculate from v_x, v_y, v_z")
         
@@ -265,8 +298,7 @@ class MixerDataProcessor:
                     df = pd.read_csv(file_path)
                 
                 df['frame'] = frame_num
-                # ===== 修改3：使用frame_dt计算时间 =====
-                df['time'] = frame_num * self.config.frame_dt  # 使用frame_dt而不是dt
+                df['time'] = frame_num * self.config.frame_dt  # Use frame_dt instead of dt
                 all_data.append(df)
                 
                 # Progress indicator
@@ -283,13 +315,13 @@ class MixerDataProcessor:
         
         # Merge data
         print("-" * 40)
-        print("  ✔ Merging data frames...")
+        print("  ✓ Merging data frames...")
         self.df = pd.concat(all_data, ignore_index=True)
-        print(f"  ✔ Total data points: {len(self.df):,}")
+        print(f"  ✓ Total data points: {len(self.df):,}")
         
         # Add verification information
-        print(f"  ✔ Total simulation time: {self.df['time'].max():.3f} seconds")
-        print(f"  ✔ Rotor revolutions: {self.df['time'].max() * self.config.RPM / 60:.1f}")
+        print(f"  ✓ Total simulation time: {self.df['time'].max():.3f} seconds")
+        print(f"  ✓ Rotor revolutions: {self.df['time'].max() * self.config.RPM / 60:.1f}")
         
         return self.df
     
@@ -300,7 +332,7 @@ class MixerDataProcessor:
         
         # Check for pre-calculated velocity
         if 'velocity' in self.df.columns:
-            print("  ✔ Using pre-calculated velocity column")
+            print("  ✓ Using pre-calculated velocity column")
             results = {
                 'v_total': self.df['velocity'].values,
                 'v_xy': np.sqrt(self.df['v_x'].values**2 + self.df['v_y'].values**2),
@@ -311,7 +343,7 @@ class MixerDataProcessor:
                 'r_dist': np.sqrt(self.df['X'].values**2 + self.df['Y'].values**2)
             }
         else:
-            print("  ✔ Calculating velocities using JIT acceleration...")
+            print("  ✓ Calculating velocities using JIT acceleration...")
             results = calculate_all_velocities(
                 self.df['v_x'].values, self.df['v_y'].values, self.df['v_z'].values,
                 self.df['w_x'].values, self.df['w_y'].values, self.df['w_z'].values,
@@ -322,16 +354,15 @@ class MixerDataProcessor:
         for key, value in results.items():
             self.df[key] = value
         
-        print(f"  ✔ Velocity processing complete")
+        print(f"  ✓ Velocity processing complete")
     
     def process_angles(self) -> None:
         """Process angle data"""
         if self.df is None:
             raise ValueError("No data loaded. Call load_data() first.")
         
-        print("  ✔ Calculating angles using JIT acceleration...")
+        print("  ✓ Calculating angles using JIT acceleration...")
         
-        # ===== 修改4：传入frame_dt而不是dt =====
         polar_angles, rotor_angles, relative_angles = compute_angles_vectorized(
             self.df['X'].values,
             self.df['Y'].values,
@@ -349,7 +380,7 @@ class MixerDataProcessor:
         self.df['relative_angle'] = relative_angles
         self.df['angle_interval'] = intervals
         
-        print(f"  ✔ Angle processing complete")
+        print(f"  ✓ Angle processing complete")
 
 # ======================== Statistical Analysis Class ========================
 class StatisticalAnalyzer:
@@ -432,6 +463,7 @@ class MultiDirectoryComparison:
         for dir_info in self.multi_config.directories:
             print(f"\n{'='*60}")
             print(f"Processing: {dir_info['name']}")
+            print(f"  Directory Type: {dir_info['dir_type']}")
             print(f"  Scale Factor: f{dir_info['scale_factor']}")
             print(f"  Surface Energy: se{dir_info['surface_energy']}")
             print('='*60)
@@ -443,7 +475,8 @@ class MultiDirectoryComparison:
                     surface_energy=dir_info['surface_energy'],
                     base_path=self.multi_config.base_path,
                     enable_plotting=self.multi_config.enable_plotting,
-                    steady_state_fraction=self.multi_config.steady_state_fraction
+                    steady_state_fraction=self.multi_config.steady_state_fraction,
+                    dir_type=dir_info['dir_type']
                 )
                 
                 # Process directory
@@ -483,17 +516,20 @@ class MultiDirectoryComparison:
         """Save results for individual directory"""
         result = self.results[dir_name]
         config = result['config']
+        dir_info = result['dir_info']
         
         # Save statistical results
-        result['angle_stats'].to_csv(config.output_path / f'AngleStats_f{config.scale_factor}.csv')
-        result['radial_stats'].to_csv(config.output_path / f'RadialStats_f{config.scale_factor}.csv')
-        result['particle_stats'].to_csv(config.output_path / f'ParticleStats_f{config.scale_factor}.csv')
-        result['pdf_data'].to_csv(config.output_path / f'PDF_f{config.scale_factor}.csv', index=False)
+        result['angle_stats'].to_csv(config.output_path / f'AngleStats_{dir_info["dir_type"]}_f{config.scale_factor}.csv')
+        result['radial_stats'].to_csv(config.output_path / f'RadialStats_{dir_info["dir_type"]}_f{config.scale_factor}.csv')
+        result['particle_stats'].to_csv(config.output_path / f'ParticleStats_{dir_info["dir_type"]}_f{config.scale_factor}.csv')
+        result['pdf_data'].to_csv(config.output_path / f'PDF_{dir_info["dir_type"]}_f{config.scale_factor}.csv', index=False)
         
         # Save summary with frame_dt info
-        with open(config.output_path / f'Summary_f{config.scale_factor}.txt', 'w') as f:
+        with open(config.output_path / f'Summary_{dir_info["dir_type"]}_f{config.scale_factor}.txt', 'w') as f:
             summary = result['summary']
-            f.write(f"SUP Mixer Analysis Summary - Scale Factor f{config.scale_factor}\n")
+            f.write(f"SUP Mixer Analysis Summary\n")
+            f.write(f"Directory Type: {dir_info['dir_type']}\n")
+            f.write(f"Scale Factor: f{config.scale_factor}\n")
             f.write(f"Surface Energy: se{config.surface_energy}\n")
             f.write(f"Frame time interval: {config.frame_dt*1000:.1f} ms\n")
             f.write("=" * 60 + "\n\n")
@@ -507,7 +543,7 @@ class MultiDirectoryComparison:
             f.write(f"  Min:    {summary['velocity_stats']['min']:.4f} m/s\n")
             f.write(f"  Median: {summary['velocity_stats']['median']:.4f} m/s\n")
         
-        print(f"  ✔ Results saved to: {config.output_path}")
+        print(f"  ✓ Results saved to: {config.output_path}")
     
     def generate_comparison(self):
         """Generate comparison plots and summary"""
@@ -526,10 +562,12 @@ class MultiDirectoryComparison:
         comparison_data = []
         for name, result in self.results.items():
             summary = result['summary']
+            dir_info = result['dir_info']
             comparison_data.append({
                 'Directory': name,
-                'Scale_Factor': result['dir_info']['scale_factor'],
-                'Surface_Energy': result['dir_info']['surface_energy'],
+                'Directory_Type': dir_info['dir_type'],
+                'Scale_Factor': dir_info['scale_factor'],
+                'Surface_Energy': dir_info['surface_energy'],
                 'Frame_Interval_ms': result['config'].frame_dt * 1000,
                 'Mean_Velocity': summary['velocity_stats']['mean'],
                 'Std_Velocity': summary['velocity_stats']['std'],
@@ -542,9 +580,9 @@ class MultiDirectoryComparison:
         
         # Save comparison CSV
         comparison_df = pd.DataFrame(comparison_data)
-        comparison_df = comparison_df.sort_values(['Scale_Factor', 'Surface_Energy'])
+        comparison_df = comparison_df.sort_values(['Directory_Type', 'Scale_Factor', 'Surface_Energy'])
         comparison_df.to_csv(comparison_dir / 'velocity_comparison.csv', index=False)
-        print(f"  ✔ Comparison data saved to: {comparison_dir / 'velocity_comparison.csv'}")
+        print(f"  ✓ Comparison data saved to: {comparison_dir / 'velocity_comparison.csv'}")
         
         # Generate comparison plots if enabled
         if self.multi_config.enable_plotting:
@@ -628,7 +666,7 @@ class MultiDirectoryComparison:
         plt.savefig(output_dir / 'mean_velocity_comparison.png', dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"  ✔ Comparison plots saved to: {output_dir}")
+        print(f"  ✓ Comparison plots saved to: {output_dir}")
 
 # ======================== Print Functions ========================
 def print_header(title: str, width: int = 60):
@@ -646,17 +684,19 @@ def print_section(title: str, width: int = 40):
 def main():
     """
     Main program for multi-directory analysis
+    Updated to support multiple directory naming formats
     """
     # ==================== Configurable Parameters ====================
-    base_path = "/media/huyuze/Fanxiang/DEME_Data/backup251109"  # Search directory, can be "build" or other path
-    filter_cohesion = "000"  # Only process cohesion=0 data, set to None for all
+    base_path = "/media/huyuze/Fanxiang/DEME_Data/backup251115"  # Search directory
+    filter_cohesion = "080"  # Only process cohesion=0 data, set to None for all
+    filter_type = None  # Filter for specific type: 'standard', 'SizeDiff', 'DualDensity', or None for all
     use_interpolation = False  # Whether to use interpolation
     enable_plotting = True  # Generate plots
-    steady_state_fraction = 0.5  # Use last 50% of data (can be 0.33 for last 1/3)
+    steady_state_fraction = 0.5  # Use last 50% of data
     
     # ==================== Run Analysis ====================
     print_header("SUP MIXER MULTI-DIRECTORY VELOCITY ANALYSIS")
-    print("Version: Fixed frame time intervals")
+    print("Version: Multi-Format Support (Standard/SizeDiff/DualDensity)")
     start_time = datetime.datetime.now()
     
     try:
@@ -666,26 +706,45 @@ def main():
             filter_cohesion=filter_cohesion,
             use_interpolation=use_interpolation,
             enable_plotting=enable_plotting,
-            steady_state_fraction=steady_state_fraction
+            steady_state_fraction=steady_state_fraction,
+            filter_type=filter_type
         )
         
         if not multi_config.directories:
             print("✗ No matching directories found!")
-            print(f"  Searched for: SUPMixerOutput_f*se{filter_cohesion if filter_cohesion else '*'}")
+            print(f"  Searched for patterns:")
+            print(f"    - SUPMixerOutput_f*se*")
+            print(f"    - SUPMixerOutput_SizeDiff_f*se*")
+            print(f"    - SUPMixerOutput_DualDensity_f*se*")
+            if filter_cohesion:
+                print(f"  With surface energy filter: se{filter_cohesion}")
+            if filter_type:
+                print(f"  With type filter: {filter_type}")
             print(f"  In path: {base_path}")
             return
         
         print(f"Configuration:")
         print(f"  Base path: {base_path}")
         print(f"  Filter cohesion: {filter_cohesion if filter_cohesion else 'None (process all)'}")
-        print(f"  Steady state fraction: {steady_state_fraction:.0%} (using last {steady_state_fraction:.0%} of data)")
+        print(f"  Filter type: {filter_type if filter_type else 'None (process all types)'}")
+        print(f"  Steady state fraction: {steady_state_fraction:.0%}")
         print(f"  Enable plotting: {enable_plotting}")
         print(f"  Use interpolation: {use_interpolation}")
         print(f"\nFound {len(multi_config.directories)} directories to process:")
+        
+        # Group directories by type for display
+        by_type = {}
         for d in multi_config.directories:
-            scale_f = d['scale_factor']
-            frame_dt_ms = 5.0 if scale_f == 1 else 1.0
-            print(f"  - {d['name']} (frame interval: {frame_dt_ms} ms)")
+            if d['dir_type'] not in by_type:
+                by_type[d['dir_type']] = []
+            by_type[d['dir_type']].append(d)
+        
+        for dir_type, dirs in by_type.items():
+            print(f"\n  {dir_type}:")
+            for d in dirs:
+                scale_f = d['scale_factor']
+                frame_dt_ms = 5.0 if scale_f == 1 else 1.0
+                print(f"    - {d['name']} (frame interval: {frame_dt_ms} ms)")
         
         # Process all directories
         comparison = MultiDirectoryComparison(multi_config)
@@ -697,11 +756,7 @@ def main():
         print(f"  Total Processing Time: {elapsed:.2f} seconds")
         print(f"  Directories Processed: {len(comparison.results)}")
         
-        if filter_cohesion:
-            print(f"  Results saved to: sta_results/se{filter_cohesion}/")
-        else:
-            print(f"  Results saved to: sta_results/")
-        
+        print(f"\n  Results saved to: sta_results/")
         print("\n✓ All analyses complete!")
         print("=" * 60)
         
@@ -712,4 +767,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
