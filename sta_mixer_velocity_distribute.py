@@ -2,9 +2,7 @@
 """
 SUP Mixer Velocity Distribution Analysis - Multi-Directory Comparison Version
 Analyzes particle velocity distributions in DEM mixer simulations with SUP models
-Supports multiple surface energy values comparison
-Fixed: Correct frame time intervals for different scale factors
-Updated: Support for multiple directory naming formats (Standard, SizeDiff, DualDensity)
+Fixed: Flattened MultiIndex headers in CSV outputs for better compatibility.
 """
 
 import os
@@ -33,7 +31,7 @@ class Config:
         self.base_path = Path(base_path)
         self.dir_type = dir_type  # 'standard', 'SizeDiff', or 'DualDensity'
         
-        # Construct input and output paths based on directory type
+        # Construct input and output paths
         if dir_type == "standard":
             self.input_path = self.base_path / f'SUPMixerOutput_f{scale_factor}se{surface_energy}'
         elif dir_type == "SizeDiff":
@@ -43,48 +41,27 @@ class Config:
         else:
             raise ValueError(f"Unknown directory type: {dir_type}")
             
-        # Output path includes directory type
         self.output_base = Path(f'sta_results/{dir_type}_se{surface_energy}/')
         self.output_path = self.output_base / f'f{scale_factor}/'
         
-        # Frame time interval parameter
         if scale_factor == 1:
-            self.frame_dt = 5e-3  # f1 using 5ms interval (5000 time steps)
+            self.frame_dt = 5e-3  
         else:
-            self.frame_dt = 1e-3  # others using 1ms interval (1000 time steps)
+            self.frame_dt = 1e-3  
 
-        # Simulation parameters
-        self.RPM = 300  # Mixer rotation speed
-        self.dt = 1e-6  # Simulation time step (only for recording, not for frame time calculation)
-        self.frame_skip = 100  # Read every nth frame
-        self.max_sample_size = 100000  # Maximum sampling rows
-        self.chunk_size = 10000  # Chunk reading size
-        self.steady_state_fraction = steady_state_fraction  # Use last fraction of data (0.5 = last half)
-        
-        # Plotting control parameters
+        self.RPM = 300  
+        self.frame_skip = 100  
+        self.steady_state_fraction = steady_state_fraction  
         self.enable_plotting = enable_plotting
-        self.plot_dpi = 300  # Publication quality DPI
-        self.plot_show = False  # Show plots or just save
+        self.plot_dpi = 300  
         
-        # Set matplotlib parameters for scientific style
         if enable_plotting:
             plt.rcParams['font.family'] = 'serif'
-            plt.rcParams['font.serif'] = ['DejaVu Serif', 'Times New Roman']
-            plt.rcParams['font.size'] = 12
             plt.rcParams['axes.unicode_minus'] = False
-            plt.rcParams['figure.dpi'] = 100
-            plt.rcParams['savefig.dpi'] = self.plot_dpi
-            plt.rcParams['axes.linewidth'] = 1.8
-            plt.rcParams['xtick.major.width'] = 1.2
-            plt.rcParams['ytick.major.width'] = 1.2
         else:
-            matplotlib.use('Agg')  # Non-interactive backend
+            matplotlib.use('Agg')
         
-        # Create output directories
         self.output_path.mkdir(parents=True, exist_ok=True)
-        
-    def __str__(self):
-        return f"Config({self.dir_type}_f{self.scale_factor}se{self.surface_energy}, frame_dt={self.frame_dt*1000:.1f}ms)"
 
 class MultiDirectoryConfig:
     """Configuration for multi-directory comparison analysis"""
@@ -93,677 +70,213 @@ class MultiDirectoryConfig:
                  steady_state_fraction: float = 0.5, filter_type: Optional[str] = None):
         self.base_path = Path(base_path)
         self.filter_cohesion = filter_cohesion
-        self.filter_type = filter_type  # Filter for specific directory type
-        self.use_interpolation = use_interpolation
+        self.filter_type = filter_type
         self.enable_plotting = enable_plotting
         self.steady_state_fraction = steady_state_fraction
-        
-        # Find all matching directories
         self.directories = self.find_matching_directories()
         
     def find_matching_directories(self) -> List[Dict]:
-        """Find all directories matching the patterns"""
         dirs = []
-        
-        # Define patterns for three directory types
         patterns = [
             ('standard', r'SUPMixerOutput_f(\d+)se(\d+)$'),
             ('SizeDiff', r'SUPMixerOutput_SizeDiff_f(\d+)se(\d+)$'),
             ('DualDensity', r'SUPMixerOutput_DualDensity_f(\d+)se(\d+)$')
         ]
         
-        # Search for all directories
         for path in self.base_path.iterdir():
-            if not path.is_dir():
-                continue
-                
-            # Try to match each pattern
+            if not path.is_dir(): continue
             for dir_type, pattern in patterns:
                 match = re.match(pattern, path.name)
                 if match:
                     scale_factor = int(match.group(1))
                     surface_energy = match.group(2)
-                    
-                    # Apply filters
-                    if self.filter_cohesion and surface_energy != self.filter_cohesion:
-                        continue
-                    if self.filter_type and dir_type != self.filter_type:
-                        continue
-                    
+                    if self.filter_cohesion and surface_energy != self.filter_cohesion: continue
+                    if self.filter_type and dir_type != self.filter_type: continue
                     dirs.append({
-                        'path': path,
-                        'scale_factor': scale_factor,
-                        'surface_energy': surface_energy,
-                        'dir_type': dir_type,
-                        'name': path.name
+                        'path': path, 'scale_factor': scale_factor,
+                        'surface_energy': surface_energy, 'dir_type': dir_type, 'name': path.name
                     })
                     break
-        
-        # Sort by directory type, then scale_factor, then surface_energy
         type_order = {'standard': 0, 'SizeDiff': 1, 'DualDensity': 2}
-        return sorted(dirs, key=lambda x: (type_order.get(x['dir_type'], 99), 
-                                          x['scale_factor'], 
-                                          x['surface_energy']))
+        return sorted(dirs, key=lambda x: (type_order.get(x['dir_type'], 99), x['scale_factor']))
 
 # ======================== JIT Accelerated Functions ========================
 @jit(nopython=True, parallel=True)
-def compute_angles_vectorized(x: np.ndarray, y: np.ndarray, 
-                             frame_numbers: np.ndarray, 
-                             frame_dt: float, RPM: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Vectorized calculation of all angle-related values
-    Fix: Using frame_dt instead of dt to calculate actual time"""
+def compute_angles_vectorized(x, y, frame_numbers, frame_dt, RPM):
     n = len(x)
-    polar_angles = np.zeros(n)
-    rotor_angles = np.zeros(n)
-    relative_angles = np.zeros(n)
-    
+    polar_angles = np.zeros(n); rotor_angles = np.zeros(n); relative_angles = np.zeros(n)
     RPS = RPM / 60.0
-    
     for i in prange(n):
-        # Calculate polar angle
         polar_angles[i] = np.arctan2(y[i], x[i])
-        
-        # Calculate rotor angle - using frame_dt to calculate actual physical time
-        time = frame_numbers[i] * frame_dt  # Fixed: using frame_dt instead of dt
+        time = frame_numbers[i] * frame_dt
         rotor_angles[i] = (RPS * time * 2 * np.pi) % (2 * np.pi)
-        
-        # Calculate relative angle
         rel_angle = polar_angles[i] - rotor_angles[i]
         relative_angles[i] = np.mod(rel_angle + np.pi, 2 * np.pi) - np.pi
-    
     return polar_angles, rotor_angles, relative_angles
 
 @jit(nopython=True, parallel=True)
-def classify_angles_vectorized(angles: np.ndarray) -> np.ndarray:
-    """Vectorized angle classification"""
+def classify_angles_vectorized(angles):
     n = len(angles)
     intervals = np.zeros(n, dtype=np.int32)
-    
     for i in prange(n):
-        angle_deg = np.rad2deg(angles[i])
-        angle_deg = np.mod(angle_deg + 360, 360)
+        angle_deg = np.mod(np.rad2deg(angles[i]) + 360, 360)
         intervals[i] = 1 + int(angle_deg // 10)
-    
     return intervals
 
 @jit(nopython=True, parallel=True)
-def calculate_all_velocities(v_x: np.ndarray, v_y: np.ndarray, v_z: np.ndarray,
-                            w_x: np.ndarray, w_y: np.ndarray, w_z: np.ndarray,
-                            x: np.ndarray, y: np.ndarray) -> Dict:
-    """Calculate all velocity and distance related values at once"""
+def calculate_all_velocities(v_x, v_y, v_z, w_x, w_y, w_z, x, y):
     n = len(v_x)
-    v_total = np.zeros(n)
-    v_xy = np.zeros(n)
-    v_z_abs = np.zeros(n)
-    w_total = np.zeros(n)
-    r_dist = np.zeros(n)
-    
-    for i in prange(n):
-        v_total[i] = np.sqrt(v_x[i]**2 + v_y[i]**2 + v_z[i]**2)
-        v_xy[i] = np.sqrt(v_x[i]**2 + v_y[i]**2)
-        v_z_abs[i] = np.abs(v_z[i])
-        w_total[i] = np.sqrt(w_x[i]**2 + w_y[i]**2 + w_z[i]**2)
-        r_dist[i] = np.sqrt(x[i]**2 + y[i]**2)
-    
-    return {
-        'v_total': v_total,
-        'v_xy': v_xy,
-        'v_z_abs': v_z_abs,
-        'w_total': w_total,
-        'r_dist': r_dist
-    }
+    v_total = np.sqrt(v_x**2 + v_y**2 + v_z**2)
+    v_xy = np.sqrt(v_x**2 + v_y**2)
+    v_z_abs = np.abs(v_z)
+    w_total = np.sqrt(w_x**2 + w_y**2 + w_z**2)
+    r_dist = np.sqrt(x**2 + y**2)
+    return v_total, v_xy, v_z_abs, w_total, r_dist
 
-# ======================== Data Processing Class ========================
+# ======================== Data Processing & Analysis ========================
 class MixerDataProcessor:
     def __init__(self, config: Config):
         self.config = config
         self.df = None
         
-    def extract_frame_number(self, filename: str) -> int:
-        """Extract frame number from filename"""
-        match = re.search(r'mixer_output_(\d+)\.csv', filename)
-        return int(match.group(1)) if match else 0
-    
-    def get_files_to_read(self, max_files: Optional[int] = None) -> list:
-        """Get list of files to read (only steady state portion)"""
+    def load_data(self) -> pd.DataFrame:
         pattern = self.config.input_path / 'mixer_output_*.csv'
         files = sorted(glob.glob(str(pattern)))
+        if not files: raise FileNotFoundError(f"No CSV files in {self.config.input_path}")
         
-        if not files:
-            raise FileNotFoundError(f"No CSV files found in {self.config.input_path}")
+        all_frames = sorted([(f, int(re.search(r'_(\d+)\.csv', f).group(1))) for f in files], key=lambda x: x[1])
+        start_idx = int(len(all_frames) * (1 - self.config.steady_state_fraction))
+        steady_frames = [f for f in all_frames[start_idx:] if f[1] % self.config.frame_skip == 0]
         
-        # Extract all frame numbers
-        all_frames = []
-        for file in files:
-            frame_num = self.extract_frame_number(os.path.basename(file))
-            all_frames.append((file, frame_num))
-        
-        # Sort by frame number
-        all_frames.sort(key=lambda x: x[1])
-        
-        # Calculate steady state portion
-        total_frames = len(all_frames)
-        start_idx = int(total_frames * (1 - self.config.steady_state_fraction))
-        steady_state_frames = all_frames[start_idx:]
-        
-        print(f"  ✓ Total frames found: {total_frames}")
-        print(f"  ✓ Using last {self.config.steady_state_fraction:.0%} ({len(steady_state_frames)} frames) for steady state")
-        print(f"  ✓ Frame time interval: {self.config.frame_dt*1000:.1f} ms")
-        
-        # Filter by frame_skip
-        files_to_read = []
-        for file, frame_num in steady_state_frames:
-            if frame_num % self.config.frame_skip == 0:
-                files_to_read.append((file, frame_num))
-        
-        if max_files:
-            files_to_read = files_to_read[:max_files]
-            
-        return files_to_read
-    
-    def read_data_chunked(self, file_path: str) -> pd.DataFrame:
-        """Read large files in chunks"""
-        chunks = []
-        for chunk in pd.read_csv(file_path, chunksize=self.config.chunk_size):
-            chunks.append(chunk)
-        return pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
-    
-    def load_data(self, max_files: Optional[int] = None) -> pd.DataFrame:
-        """Load mixer data (steady state only)"""
-        files_to_read = self.get_files_to_read(max_files)
-        
-        print(f"  ✓ Will process {len(files_to_read)} files")
-        print(f"  ✓ Reading every {self.config.frame_skip} frames")
-        print("-" * 40)
-        
-        # Check first file structure
-        first_file_path, _ = files_to_read[0]
-        first_df = pd.read_csv(first_file_path, nrows=1)
-        has_velocity = 'velocity' in first_df.columns
-        
-        if has_velocity:
-            print("  ✓ Detected pre-processed files with velocity column")
-        else:
-            print("  ⚠ No velocity column found - will calculate from v_x, v_y, v_z")
-        
-        # Read data files
         all_data = []
-        for i, (file_path, frame_num) in enumerate(files_to_read, 1):
-            try:
-                # Use chunked reading for large files
-                file_size = os.path.getsize(file_path)
-                if file_size > 50 * 1024 * 1024:  # > 50MB
-                    df = self.read_data_chunked(file_path)
-                else:
-                    df = pd.read_csv(file_path)
-                
-                df['frame'] = frame_num
-                df['time'] = frame_num * self.config.frame_dt  # Use frame_dt instead of dt
-                all_data.append(df)
-                
-                # Progress indicator
-                if i % 10 == 0 or i == len(files_to_read):
-                    progress = (i / len(files_to_read)) * 100
-                    print(f"    Reading files: {progress:5.1f}% complete ({i}/{len(files_to_read)})")
-                    
-            except Exception as e:
-                print(f"  ✗ Error reading {file_path}: {e}")
-                continue
-        
-        if not all_data:
-            raise ValueError("No data successfully loaded")
-        
-        # Merge data
-        print("-" * 40)
-        print("  ✓ Merging data frames...")
+        for i, (file_path, frame_num) in enumerate(steady_frames, 1):
+            df = pd.read_csv(file_path)
+            df['frame'] = frame_num
+            df['time'] = frame_num * self.config.frame_dt
+            all_data.append(df)
         self.df = pd.concat(all_data, ignore_index=True)
-        print(f"  ✓ Total data points: {len(self.df):,}")
-        
-        # Add verification information
-        print(f"  ✓ Total simulation time: {self.df['time'].max():.3f} seconds")
-        print(f"  ✓ Rotor revolutions: {self.df['time'].max() * self.config.RPM / 60:.1f}")
-        
         return self.df
     
-    def process_velocities(self) -> None:
-        """Process velocity data"""
-        if self.df is None:
-            raise ValueError("No data loaded. Call load_data() first.")
-        
-        # Check for pre-calculated velocity
-        if 'velocity' in self.df.columns:
-            print("  ✓ Using pre-calculated velocity column")
-            results = {
-                'v_total': self.df['velocity'].values,
-                'v_xy': np.sqrt(self.df['v_x'].values**2 + self.df['v_y'].values**2),
-                'v_z_abs': np.abs(self.df['v_z'].values),
-                'w_total': np.sqrt(self.df['w_x'].values**2 + 
-                                 self.df['w_y'].values**2 + 
-                                 self.df['w_z'].values**2),
-                'r_dist': np.sqrt(self.df['X'].values**2 + self.df['Y'].values**2)
-            }
-        else:
-            print("  ✓ Calculating velocities using JIT acceleration...")
-            results = calculate_all_velocities(
-                self.df['v_x'].values, self.df['v_y'].values, self.df['v_z'].values,
-                self.df['w_x'].values, self.df['w_y'].values, self.df['w_z'].values,
-                self.df['X'].values, self.df['Y'].values
-            )
-        
-        # Batch assignment
-        for key, value in results.items():
-            self.df[key] = value
-        
-        print(f"  ✓ Velocity processing complete")
-    
-    def process_angles(self) -> None:
-        """Process angle data"""
-        if self.df is None:
-            raise ValueError("No data loaded. Call load_data() first.")
-        
-        print("  ✓ Calculating angles using JIT acceleration...")
-        
-        polar_angles, rotor_angles, relative_angles = compute_angles_vectorized(
-            self.df['X'].values,
-            self.df['Y'].values,
-            self.df['frame'].values,
-            self.config.frame_dt,  # use frame_dt instead of dt
-            self.config.RPM
+    def process_velocities(self):
+        v_t, v_xy, v_za, w_t, r_d = calculate_all_velocities(
+            self.df['v_x'].values, self.df['v_y'].values, self.df['v_z'].values,
+            self.df['w_x'].values, self.df['w_y'].values, self.df['w_z'].values,
+            self.df['X'].values, self.df['Y'].values
         )
+        self.df['v_total'], self.df['v_xy'], self.df['v_z_abs'] = v_t, v_xy, v_za
+        self.df['w_total'], self.df['r_dist'] = w_t, r_d
         
-        # Classify angles
-        intervals = classify_angles_vectorized(relative_angles)
-        
-        # Batch assignment
-        self.df['polar_angle'] = polar_angles
-        self.df['rotor_angle'] = rotor_angles
-        self.df['relative_angle'] = relative_angles
-        self.df['angle_interval'] = intervals
-        
-        print(f"  ✓ Angle processing complete")
+    def process_angles(self):
+        pa, ra, rela = compute_angles_vectorized(self.df['X'].values, self.df['Y'].values, 
+                                                 self.df['frame'].values, self.config.frame_dt, self.config.RPM)
+        self.df['relative_angle'] = rela
+        self.df['angle_interval'] = classify_angles_vectorized(rela)
 
-# ======================== Statistical Analysis Class ========================
 class StatisticalAnalyzer:
+    """核心修复：处理多级表头和索引"""
     def __init__(self, df: pd.DataFrame):
         self.df = df
         
+    def _flatten_cols(self, df_stats):
+        """内部工具：将 (变量, 统计量) 转为 '变量_统计量' 格式"""
+        df_stats.columns = [f"{c[0]}_{c[1]}" if c[1] else c[0] for c in df_stats.columns]
+        return df_stats.reset_index()
+
     def compute_angle_statistics(self) -> pd.DataFrame:
-        """Compute statistics by angle interval"""
-        return self.df.groupby('angle_interval').agg({
+        stats = self.df.groupby('angle_interval').agg({
             'v_z': ['mean', 'std'],
-            'v_z_abs': 'mean',
+            'v_z_abs': ['mean'],
             'v_total': ['mean', 'std'],
-            'Z': 'mean',
-            'r': 'mean'
+            'Z': ['mean'],
+            'r': ['mean']
         }).round(4)
+        return self._flatten_cols(stats)
     
     def compute_radial_statistics(self, bin_size_mm: float = 1.0) -> pd.DataFrame:
-        """Compute statistics by radial distance"""
         self.df['r_group'] = (self.df['r_dist'] * 1000 / bin_size_mm).astype(int) * bin_size_mm / 1000
-        return self.df.groupby('r_group').agg({
+        stats = self.df.groupby('r_group').agg({
             'v_total': ['mean', 'std'],
             'v_z': ['mean', 'std'],
-            'Z': 'mean'
+            'Z': ['mean']
         }).round(4)
+        return self._flatten_cols(stats)
     
     def compute_particle_statistics(self) -> pd.DataFrame:
-        """Compute statistics by particle radius"""
-        return self.df.groupby('r').agg({
+        stats = self.df.groupby('r').agg({
             'v_total': ['mean', 'std'],
             'v_z': ['mean', 'std'],
             'w_total': ['mean', 'std']
         }).round(4)
+        return self._flatten_cols(stats)
     
     def compute_velocity_pdf(self, bins: int = 76, v_range: Tuple[float, float] = (0, 1.52)) -> pd.DataFrame:
-        """Calculate velocity probability density distribution"""
-        bin_edges = np.linspace(v_range[0], v_range[1], bins + 1)
-        hist, edges = np.histogram(self.df['v_total'].values, bins=bin_edges, density=True)
-        bin_centers = (edges[:-1] + edges[1:]) / 2
-        
-        return pd.DataFrame({
-            'velocity_center': bin_centers,
-            'probability_density': hist
-        })
-    
+        hist, edges = np.histogram(self.df['v_total'].values, bins=np.linspace(v_range[0], v_range[1], bins + 1), density=True)
+        return pd.DataFrame({'velocity_center': (edges[:-1] + edges[1:]) / 2, 'probability_density': hist})
+
     def get_summary_statistics(self) -> dict:
-        """Get summary statistics"""
         return {
             'total_particles': len(self.df),
             'num_frames': self.df['frame'].nunique(),
-            'time_range': (self.df['time'].min(), self.df['time'].max()),
-            'velocity_stats': {
-                'mean': self.df['v_total'].mean(),
-                'std': self.df['v_total'].std(),
-                'max': self.df['v_total'].max(),
-                'min': self.df['v_total'].min(),
-                'median': self.df['v_total'].median()
-            },
-            'particle_sizes': sorted(self.df['r'].unique()) if 'r' in self.df.columns else [],
-            'spatial_extent': {
-                'x_range': (self.df['X'].min(), self.df['X'].max()),
-                'y_range': (self.df['Y'].min(), self.df['Y'].max()),
-                'z_range': (self.df['Z'].min(), self.df['Z'].max())
-            }
+            'velocity_stats': self.df['v_total'].describe().to_dict(),
+            'time_range': (self.df['time'].min(), self.df['time'].max())
         }
 
 # ======================== Multi-Directory Comparison Class ========================
 class MultiDirectoryComparison:
-    """Handle comparison across multiple directories"""
     def __init__(self, multi_config: MultiDirectoryConfig):
         self.multi_config = multi_config
         self.results = {}
         
     def process_all_directories(self):
-        """Process all matching directories"""
-        print("\n" + "=" * 60)
-        print("MULTI-DIRECTORY ANALYSIS")
-        print("=" * 60)
-        print(f"Found {len(self.multi_config.directories)} directories to process")
-        
         for dir_info in self.multi_config.directories:
-            print(f"\n{'='*60}")
-            print(f"Processing: {dir_info['name']}")
-            print(f"  Directory Type: {dir_info['dir_type']}")
-            print(f"  Scale Factor: f{dir_info['scale_factor']}")
-            print(f"  Surface Energy: se{dir_info['surface_energy']}")
-            print('='*60)
-            
+            print(f"\n>>> Processing: {dir_info['name']}")
             try:
-                # Create config for this directory
-                config = Config(
-                    scale_factor=dir_info['scale_factor'],
-                    surface_energy=dir_info['surface_energy'],
-                    base_path=self.multi_config.base_path,
-                    enable_plotting=self.multi_config.enable_plotting,
-                    steady_state_fraction=self.multi_config.steady_state_fraction,
-                    dir_type=dir_info['dir_type']
-                )
-                
-                # Process directory
+                config = Config(scale_factor=dir_info['scale_factor'], surface_energy=dir_info['surface_energy'],
+                                base_path=self.multi_config.base_path, enable_plotting=self.multi_config.enable_plotting,
+                                steady_state_fraction=self.multi_config.steady_state_fraction, dir_type=dir_info['dir_type'])
                 processor = MixerDataProcessor(config)
                 df = processor.load_data()
-                processor.process_velocities()
-                processor.process_angles()
+                processor.process_velocities(); processor.process_angles()
                 
-                # Statistical analysis
-                analyzer = StatisticalAnalyzer(processor.df)
-                
-                # Store results
+                analyzer = StatisticalAnalyzer(df)
                 self.results[dir_info['name']] = {
-                    'config': config,
-                    'dir_info': dir_info,
-                    'df': processor.df,
-                    'analyzer': analyzer,
+                    'config': config, 'dir_info': dir_info, 'analyzer': analyzer,
                     'angle_stats': analyzer.compute_angle_statistics(),
                     'radial_stats': analyzer.compute_radial_statistics(),
                     'particle_stats': analyzer.compute_particle_statistics(),
                     'pdf_data': analyzer.compute_velocity_pdf(),
                     'summary': analyzer.get_summary_statistics()
                 }
-                
-                # Save individual results
                 self.save_individual_results(dir_info['name'])
-                
             except Exception as e:
-                print(f"  ✗ Error processing {dir_info['name']}: {e}")
-                continue
-        
-        # Generate comparison results
-        if len(self.results) > 1:
-            self.generate_comparison()
-    
+                print(f"  Error: {e}"); continue
+
     def save_individual_results(self, dir_name: str):
-        """Save results for individual directory"""
-        result = self.results[dir_name]
-        config = result['config']
-        dir_info = result['dir_info']
+        res = self.results[dir_name]
+        path, sf, dt = res['config'].output_path, res['config'].scale_factor, res['dir_info']['dir_type']
         
-        # Save statistical results
-        result['angle_stats'].to_csv(config.output_path / f'AngleStats_{dir_info["dir_type"]}_f{config.scale_factor}.csv')
-        result['radial_stats'].to_csv(config.output_path / f'RadialStats_{dir_info["dir_type"]}_f{config.scale_factor}.csv')
-        result['particle_stats'].to_csv(config.output_path / f'ParticleStats_{dir_info["dir_type"]}_f{config.scale_factor}.csv')
-        result['pdf_data'].to_csv(config.output_path / f'PDF_{dir_info["dir_type"]}_f{config.scale_factor}.csv', index=False)
+        # 统一使用 index=False，因为已经在 StatisticalAnalyzer 中处理好了索引
+        res['angle_stats'].to_csv(path / f'AngleStats_{dt}_f{sf}.csv', index=False)
+        res['radial_stats'].to_csv(path / f'RadialStats_{dt}_f{sf}.csv', index=False)
+        res['particle_stats'].to_csv(path / f'ParticleStats_{dt}_f{sf}.csv', index=False)
+        res['pdf_data'].to_csv(path / f'PDF_{dt}_f{sf}.csv', index=False)
         
-        # Save summary with frame_dt info
-        with open(config.output_path / f'Summary_{dir_info["dir_type"]}_f{config.scale_factor}.txt', 'w') as f:
-            summary = result['summary']
-            f.write(f"SUP Mixer Analysis Summary\n")
-            f.write(f"Directory Type: {dir_info['dir_type']}\n")
-            f.write(f"Scale Factor: f{config.scale_factor}\n")
-            f.write(f"Surface Energy: se{config.surface_energy}\n")
-            f.write(f"Frame time interval: {config.frame_dt*1000:.1f} ms\n")
-            f.write("=" * 60 + "\n\n")
-            f.write(f"Total particles analyzed: {summary['total_particles']}\n")
-            f.write(f"Number of frames: {summary['num_frames']}\n")
-            f.write(f"Time range: {summary['time_range'][0]:.6f} - {summary['time_range'][1]:.6f} seconds\n")
-            f.write(f"\nVelocity Statistics:\n")
-            f.write(f"  Mean:   {summary['velocity_stats']['mean']:.4f} m/s\n")
-            f.write(f"  Std:    {summary['velocity_stats']['std']:.4f} m/s\n")
-            f.write(f"  Max:    {summary['velocity_stats']['max']:.4f} m/s\n")
-            f.write(f"  Min:    {summary['velocity_stats']['min']:.4f} m/s\n")
-            f.write(f"  Median: {summary['velocity_stats']['median']:.4f} m/s\n")
-        
-        print(f"  ✓ Results saved to: {config.output_path}")
-    
-    def generate_comparison(self):
-        """Generate comparison plots and summary"""
-        print("\n" + "=" * 60)
-        print("GENERATING COMPARISON ANALYSIS")
-        print("=" * 60)
-        
-        # Create comparison directory
-        if self.multi_config.filter_cohesion:
-            comparison_dir = Path(f'sta_results/se{self.multi_config.filter_cohesion}/comparison/')
-        else:
-            comparison_dir = Path('sta_results/comparison/')
-        comparison_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Collect comparison data
-        comparison_data = []
-        for name, result in self.results.items():
-            summary = result['summary']
-            dir_info = result['dir_info']
-            comparison_data.append({
-                'Directory': name,
-                'Directory_Type': dir_info['dir_type'],
-                'Scale_Factor': dir_info['scale_factor'],
-                'Surface_Energy': dir_info['surface_energy'],
-                'Frame_Interval_ms': result['config'].frame_dt * 1000,
-                'Mean_Velocity': summary['velocity_stats']['mean'],
-                'Std_Velocity': summary['velocity_stats']['std'],
-                'Max_Velocity': summary['velocity_stats']['max'],
-                'Min_Velocity': summary['velocity_stats']['min'],
-                'Median_Velocity': summary['velocity_stats']['median'],
-                'Total_Particles': summary['total_particles'],
-                'Num_Frames': summary['num_frames']
-            })
-        
-        # Save comparison CSV
-        comparison_df = pd.DataFrame(comparison_data)
-        comparison_df = comparison_df.sort_values(['Directory_Type', 'Scale_Factor', 'Surface_Energy'])
-        comparison_df.to_csv(comparison_dir / 'velocity_comparison.csv', index=False)
-        print(f"  ✓ Comparison data saved to: {comparison_dir / 'velocity_comparison.csv'}")
-        
-        # Generate comparison plots if enabled
-        if self.multi_config.enable_plotting:
-            self.plot_comparison(comparison_dir)
-    
-    def plot_comparison(self, output_dir: Path):
-        """Generate comparison plots"""
-        # Set up scientific style
-        plt.rcParams.update({
-            'font.family': 'serif',
-            'font.size': 12,
-            'axes.linewidth': 1.8,
-            'xtick.major.width': 1.2,
-            'ytick.major.width': 1.2
-        })
-        
-        # Plot 1: PDF Comparison
-        fig, ax = plt.subplots(figsize=(14, 8))
-        
-        colors = plt.cm.viridis(np.linspace(0, 0.9, len(self.results)))
-        
-        for (name, result), color in zip(self.results.items(), colors):
-            pdf_data = result['pdf_data']
-            dir_info = result['dir_info']
-            label = f"f{dir_info['scale_factor']} (se{dir_info['surface_energy']})"
-            
-            ax.plot(pdf_data['velocity_center'], pdf_data['probability_density'],
-                   '-', linewidth=2.4, color=color, label=label, alpha=0.8)
-            
-            # Fill area with transparency
-            ax.fill_between(pdf_data['velocity_center'], pdf_data['probability_density'],
-                          alpha=0.1, color=color)
-        
-        ax.set_xlabel('Velocity [m/s]', fontsize=14, fontweight='bold')
-        ax.set_ylabel('Probability Density', fontsize=14, fontweight='bold')
-        ax.set_title('Velocity PDF Comparison - Multiple Configurations', 
-                    fontsize=16, fontweight='bold')
-        ax.legend(loc='upper right', frameon=True, fancybox=False,
-                 edgecolor='black', fontsize=10)
-        ax.grid(True, alpha=0.3, linewidth=0.8)
-        
-        plt.tight_layout()
-        plt.savefig(output_dir / 'PDF_comparison.png', dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        # Plot 2: Mean Velocity Bar Chart
-        fig, ax = plt.subplots(figsize=(12, 8))
-        
-        comparison_data = []
-        for name, result in self.results.items():
-            summary = result['summary']
-            dir_info = result['dir_info']
-            comparison_data.append({
-                'label': f"f{dir_info['scale_factor']}\nse{dir_info['surface_energy']}",
-                'mean': summary['velocity_stats']['mean'],
-                'std': summary['velocity_stats']['std']
-            })
-        
-        x_pos = np.arange(len(comparison_data))
-        means = [d['mean'] for d in comparison_data]
-        stds = [d['std'] for d in comparison_data]
-        labels = [d['label'] for d in comparison_data]
-        
-        bars = ax.bar(x_pos, means, yerr=stds, capsize=5, 
-                     color=colors, edgecolor='black', linewidth=1.5, alpha=0.8)
-        
-        ax.set_xlabel('Configuration', fontsize=14, fontweight='bold')
-        ax.set_ylabel('Mean Velocity [m/s]', fontsize=14, fontweight='bold')
-        ax.set_title('Mean Velocity Comparison', fontsize=16, fontweight='bold')
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels(labels)
-        ax.grid(True, axis='y', alpha=0.3, linewidth=0.8)
-        
-        # Add value labels on bars
-        for bar, mean, std in zip(bars, means, stds):
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height + std,
-                   f'{mean:.3f}', ha='center', va='bottom', fontsize=10)
-        
-        plt.tight_layout()
-        plt.savefig(output_dir / 'mean_velocity_comparison.png', dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print(f"  ✓ Comparison plots saved to: {output_dir}")
+        with open(path / f'Summary_{dt}_f{sf}.txt', 'w') as f:
+            f.write(f"Analysis Summary for {dir_name}\n" + "="*30 + "\n")
+            for k, v in res['summary'].items(): f.write(f"{k}: {v}\n")
 
-# ======================== Print Functions ========================
-def print_header(title: str, width: int = 60):
-    """Print formatted header"""
-    print("\n" + "=" * width)
-    print(title)
-    print("=" * width)
-
-def print_section(title: str, width: int = 40):
-    """Print formatted section"""
-    print("\n" + title)
-    print("-" * width)
-
-# ======================== Main Program ========================
 def main():
-    """
-    Main program for multi-directory analysis
-    Updated to support multiple directory naming formats
-    """
-    # ==================== Configurable Parameters ====================
-    base_path = "/media/huyuze/Fanxiang/DEME_Data/backup251115"  # Search directory
-    filter_cohesion = "080"  # Only process cohesion=0 data, set to None for all
-    filter_type = None  # Filter for specific type: 'standard', 'SizeDiff', 'DualDensity', or None for all
-    use_interpolation = False  # Whether to use interpolation
-    enable_plotting = True  # Generate plots
-    steady_state_fraction = 0.5  # Use last 50% of data
+    # --- 用户配置区 ---
+    base_path = "/media/huyuze/Fanxiang1/backup251109" 
+    filter_cohesion = "080"  
     
-    # ==================== Run Analysis ====================
-    print_header("SUP MIXER MULTI-DIRECTORY VELOCITY ANALYSIS")
-    print("Version: Multi-Format Support (Standard/SizeDiff/DualDensity)")
-    start_time = datetime.datetime.now()
-    
-    try:
-        # Initialize multi-directory configuration
-        multi_config = MultiDirectoryConfig(
-            base_path=base_path,
-            filter_cohesion=filter_cohesion,
-            use_interpolation=use_interpolation,
-            enable_plotting=enable_plotting,
-            steady_state_fraction=steady_state_fraction,
-            filter_type=filter_type
-        )
-        
-        if not multi_config.directories:
-            print("✗ No matching directories found!")
-            print(f"  Searched for patterns:")
-            print(f"    - SUPMixerOutput_f*se*")
-            print(f"    - SUPMixerOutput_SizeDiff_f*se*")
-            print(f"    - SUPMixerOutput_DualDensity_f*se*")
-            if filter_cohesion:
-                print(f"  With surface energy filter: se{filter_cohesion}")
-            if filter_type:
-                print(f"  With type filter: {filter_type}")
-            print(f"  In path: {base_path}")
-            return
-        
-        print(f"Configuration:")
-        print(f"  Base path: {base_path}")
-        print(f"  Filter cohesion: {filter_cohesion if filter_cohesion else 'None (process all)'}")
-        print(f"  Filter type: {filter_type if filter_type else 'None (process all types)'}")
-        print(f"  Steady state fraction: {steady_state_fraction:.0%}")
-        print(f"  Enable plotting: {enable_plotting}")
-        print(f"  Use interpolation: {use_interpolation}")
-        print(f"\nFound {len(multi_config.directories)} directories to process:")
-        
-        # Group directories by type for display
-        by_type = {}
-        for d in multi_config.directories:
-            if d['dir_type'] not in by_type:
-                by_type[d['dir_type']] = []
-            by_type[d['dir_type']].append(d)
-        
-        for dir_type, dirs in by_type.items():
-            print(f"\n  {dir_type}:")
-            for d in dirs:
-                scale_f = d['scale_factor']
-                frame_dt_ms = 5.0 if scale_f == 1 else 1.0
-                print(f"    - {d['name']} (frame interval: {frame_dt_ms} ms)")
-        
-        # Process all directories
-        comparison = MultiDirectoryComparison(multi_config)
-        comparison.process_all_directories()
-        
-        # Performance summary
-        print_header("ANALYSIS COMPLETE")
-        elapsed = (datetime.datetime.now() - start_time).total_seconds()
-        print(f"  Total Processing Time: {elapsed:.2f} seconds")
-        print(f"  Directories Processed: {len(comparison.results)}")
-        
-        print(f"\n  Results saved to: sta_results/")
-        print("\n✓ All analyses complete!")
-        print("=" * 60)
-        
-    except Exception as e:
-        print(f"\n✗ ERROR: {e}")
-        import traceback
-        traceback.print_exc()
+    multi_config = MultiDirectoryConfig(base_path=base_path, filter_cohesion=filter_cohesion)
+    if not multi_config.directories:
+        print("No matching directories found."); return
+
+    comparison = MultiDirectoryComparison(multi_config)
+    comparison.process_all_directories()
+    print("\n[DONE] All analysis completed. Check 'sta_results/' folder.")
 
 if __name__ == "__main__":
     main()

@@ -31,12 +31,12 @@ int main() {
     // =========================================================================
     
     // === SUP模型核心参数（与Part1保持一致） ===
-    const float my_scale_factor = 2.0f;                    // SUP缩放因子
+    const float my_scale_factor = 1.0f;                    // SUP缩放因子
     const float scale_force_index = 2.0f;                  // 力的缩放指数
     const int base_particle_count = 1600000;               // 基准粒子数量
     const float base_particle_diameter = 0.0005f;          // 基准粒子直径：0.5mm
     const float particle_density = 1000.0f;                // 颗粒密度：1000 kg/m³
-    const float particle_cohesion = 0.1f;                  // 颗粒间粘聚力
+    const float particle_cohesion = 0.05f;                  // 颗粒间粘聚力
     
     // === 根据缩放因子自动计算的参数 ===
     const float particle_diameter = base_particle_diameter * my_scale_factor;
@@ -50,8 +50,11 @@ int main() {
     const float simulation_time = 3.0f;                   // 仿真时间：3秒
     
     // === 时间参数 ===
-    const float step_size = 1e-6f;                         // 时间步长
-    const float time_per_frame = 1e-3f;                    // 每帧仿真时间
+    const float step_size = (my_scale_factor == 1.0f) ? 5e-7f : 
+                            (my_scale_factor == 2.0f) ? 1e-6f : 
+                            2e-6f;                        // 时间步长
+    const float time_per_frame = 
+        (my_scale_factor == 1.0f) ? 5e-3f : 1e-3f;        // 每帧仿真时间
     
     // === 仿真域参数 ===
     const float domain_size = 0.1f;                        // 100mm × 100mm 水平尺寸
@@ -62,7 +65,7 @@ int main() {
     const unsigned int FAMILY_PARTICLES = 2;
     
     // === 输入文件路径 ===
-    const std::string input_dir = "/home/huyuze/DEM-Data/";
+    const std::string input_dir = "/home/huyuze/DEM-Engine/DEM-Data/normal/";
     int scale_int = static_cast<int>(my_scale_factor);
     const std::string input_file = "SUPMixer_f" + std::to_string(scale_int) + "se000.csv"; // 根据实际文件名调整
 

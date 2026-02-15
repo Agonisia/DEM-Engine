@@ -48,6 +48,7 @@ SET(DEMOS
 		SUPdemo_Mixer_Part2
 		SUPdemo_Mixer_Dual_Part1
 		SUPdemo_Mixer_Dual_Part2
+		SUPdemo_Mixer_Dual_Extra
 )
 
 # ------------------------------------------------------------------------------

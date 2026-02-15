@@ -3,8 +3,7 @@
 SUP Mixer Lacey Index Analysis - Multi-Directory Comparison Version
 Analyzes mixing quality in DEM mixer simulations using Lacey mixing index
 Supports multiple scale factors and surface energy values comparison
-Supports three directory formats:
-  - SUPMixerOutput_f{scale_factor}se{surface_energy}
+Supports two directory formats:
   - SUPMixerOutput_SizeDiff_f{scale_factor}se{surface_energy}
   - SUPMixerOutput_DualDensity_f{scale_factor}se{surface_energy}
 """
@@ -29,20 +28,17 @@ class Config:
     """Configuration parameter management for Lacey index analysis"""
     def __init__(self, scale_factor: int = 4, surface_energy: str = "000", 
                  base_path: str = ".", enable_plotting: bool = False,
-                 steady_state_fraction: float = 0.5, experiment_type: str = ""):
+                 steady_state_fraction: float = 0.5, experiment_type: str = "SizeDiff"):
         self.scale_factor = scale_factor
         self.surface_energy = surface_energy
         self.base_path = Path(base_path)
-        self.experiment_type = experiment_type  # Can be '', 'SizeDiff', or 'DualDensity'
+        self.experiment_type = experiment_type  # Must be 'SizeDiff' or 'DualDensity'
         
-        # Construct input and output paths based on experiment type
-        if experiment_type:
-            self.input_path = self.base_path / f'SUPMixerOutput_{experiment_type}_f{scale_factor}se{surface_energy}'
-        else:
-            self.input_path = self.base_path / f'SUPMixerOutput_f{scale_factor}se{surface_energy}'
+        # Construct input path - experiment_type is required
+        self.input_path = self.base_path / f'SUPMixerOutput_{experiment_type}_f{scale_factor}se{surface_energy}'
         
-        # Keep output path structure same as original
-        self.output_base = Path(f'sta_results/lacey_results/se{surface_energy}/')
+        # Output path now includes experiment type
+        self.output_base = Path(f'sta_results/lacey_results/{experiment_type}/se{surface_energy}/')
         self.output_path = self.output_base / f'f{scale_factor}/'
         
         # Frame time interval based on scale factor
@@ -89,7 +85,7 @@ class Config:
         self.output_path.mkdir(parents=True, exist_ok=True)
         
     def __str__(self):
-        return f"Config(f{self.scale_factor}se{self.surface_energy}, frame_dt={self.frame_dt*1000:.1f}ms)"
+        return f"Config({self.experiment_type}_f{self.scale_factor}se{self.surface_energy}, frame_dt={self.frame_dt*1000:.1f}ms)"
 
 class MultiDirectoryConfig:
     """Configuration for multi-directory comparison analysis"""
@@ -104,29 +100,22 @@ class MultiDirectoryConfig:
         self.directories = self.find_matching_directories()
         
     def find_matching_directories(self) -> List[Dict]:
-        """Find all directories matching the patterns"""
+        """Find all directories matching the patterns (SizeDiff and DualDensity only)"""
         dirs = []
         
-        # Define patterns for three directory formats
+        # Define patterns for two directory formats only
         patterns = [
-            ('', r'SUPMixerOutput_f(\d+)se(\d+)$'),  # Original format
-            ('SizeDiff', r'SUPMixerOutput_SizeDiff_f(\d+)se(\d+)$'),  # Size difference
-            ('DualDensity', r'SUPMixerOutput_DualDensity_f(\d+)se(\d+)$'),  # Dual density
+            ('SizeDiff', r'SUPMixerOutput_SizeDiff_f(\d+)se(\d+)$'),
+            ('DualDensity', r'SUPMixerOutput_DualDensity_f(\d+)se(\d+)$'),
         ]
         
         # Search for each pattern
         for exp_type, pattern in patterns:
             # Build glob pattern based on filter
             if self.filter_cohesion:
-                if exp_type:
-                    glob_pattern = f'SUPMixerOutput_{exp_type}_f*se{self.filter_cohesion}'
-                else:
-                    glob_pattern = f'SUPMixerOutput_f*se{self.filter_cohesion}'
+                glob_pattern = f'SUPMixerOutput_{exp_type}_f*se{self.filter_cohesion}'
             else:
-                if exp_type:
-                    glob_pattern = f'SUPMixerOutput_{exp_type}_f*se*'
-                else:
-                    glob_pattern = f'SUPMixerOutput_f*se*'
+                glob_pattern = f'SUPMixerOutput_{exp_type}_f*se*'
             
             for path in self.base_path.glob(glob_pattern):
                 if path.is_dir():
@@ -204,23 +193,21 @@ def calculate_lacey_index(mass_fractions: np.ndarray,
     x_bar = np.mean(valid_fractions)
     
     # Calculate actual variance S² with ddof=1 (sample variance)
-    # Manual calculation since numba doesn't support ddof parameter
     n = len(valid_fractions)
     sum_sq_diff = 0.0
     for i in range(n):
         sum_sq_diff += (valid_fractions[i] - x_bar) ** 2
-    S2 = sum_sq_diff / (n - 1)  # Using n-1 for sample variance (ddof=1)
+    S2 = sum_sq_diff / (n - 1)
     
     # Calculate variance for complete segregation S₀²
     S02 = x_bar * (1.0 - x_bar)
     
     # Calculate variance for random mixing S_R²
-    # Assuming average particles per cell for simplification
     avg_particles = np.mean(particles_per_cell[valid_mask])
     SR2 = x_bar * (1.0 - x_bar) / avg_particles
     
     # Calculate Lacey index
-    if S02 - SR2 > 1e-10:  # Avoid division by zero
+    if S02 - SR2 > 1e-10:
         M = (S02 - S2) / (S02 - SR2)
     else:
         M = np.nan
@@ -261,10 +248,8 @@ class LaceyDataProcessor:
         all_frames.sort(key=lambda x: x[1])
         
         if for_time_series:
-            # For time series, use all frames with frame_skip
             files_to_read = [(f, n) for f, n in all_frames if n % self.config.frame_skip == 0]
         else:
-            # For steady state analysis
             total_frames = len(all_frames)
             start_idx = int(total_frames * (1 - self.config.steady_state_fraction))
             steady_state_frames = all_frames[start_idx:]
@@ -278,7 +263,6 @@ class LaceyDataProcessor:
     
     def calculate_lacey_for_frame(self, df: pd.DataFrame) -> Dict:
         """Calculate Lacey index for a single frame"""
-        # Calculate particle masses
         masses = calculate_particle_masses(
             df['r'].values,
             df['family'].values,
@@ -287,12 +271,10 @@ class LaceyDataProcessor:
         )
         df['mass'] = masses
         
-        # Determine grid boundaries
         x_min, x_max = df['X'].min(), df['X'].max()
         y_min, y_max = df['Y'].min(), df['Y'].max()
         z_min, z_max = df['Z'].min(), df['Z'].max()
         
-        # Add small margin to avoid edge issues
         margin = 0.001
         x_min -= margin
         x_max += margin
@@ -301,7 +283,6 @@ class LaceyDataProcessor:
         z_min -= margin
         z_max += margin
         
-        # Assign particles to grid cells
         cell_indices = assign_particles_to_grid(
             df['X'].values, df['Y'].values, df['Z'].values,
             x_min, x_max, y_min, y_max, z_min, z_max,
@@ -309,7 +290,6 @@ class LaceyDataProcessor:
         )
         df['cell'] = cell_indices
         
-        # Calculate mass fractions for each cell
         n_cells = self.config.grid_divisions ** 3
         mass_fractions = np.zeros(n_cells)
         particles_per_cell = np.zeros(n_cells)
@@ -323,10 +303,12 @@ class LaceyDataProcessor:
                 if total_mass > 0:
                     mass_fractions[cell_id] = heavy_mass / total_mass
         
-        # Calculate Lacey index
         M, S2, S02, SR2, valid_cells = calculate_lacey_index(
             mass_fractions, particles_per_cell, self.config.min_particles_per_cell
         )
+        
+        # Calculate summary statistics for particles per cell (exclude empty cells)
+        non_empty_cells = particles_per_cell[particles_per_cell > 0]
         
         return {
             'lacey_index': M,
@@ -335,8 +317,10 @@ class LaceyDataProcessor:
             'random_variance': SR2,
             'valid_cells': valid_cells,
             'total_cells': n_cells,
-            'mean_mass_fraction': np.mean(mass_fractions[particles_per_cell > 0]),
-            'particles_per_cell': particles_per_cell
+            'mean_mass_fraction': np.mean(mass_fractions[particles_per_cell > 0]) if len(non_empty_cells) > 0 else np.nan,
+            'mean_particles_per_cell': np.mean(non_empty_cells) if len(non_empty_cells) > 0 else 0,
+            'std_particles_per_cell': np.std(non_empty_cells) if len(non_empty_cells) > 0 else 0,
+            'total_particles': int(np.sum(particles_per_cell))
         }
     
     def process_time_series(self) -> pd.DataFrame:
@@ -351,18 +335,14 @@ class LaceyDataProcessor:
         for i, (file_path, frame_num) in enumerate(files_to_read, 1):
             try:
                 df = pd.read_csv(file_path)
-                
-                # Calculate Lacey index for this frame
                 result = self.calculate_lacey_for_frame(df)
                 
-                # Add time information
                 result['frame'] = frame_num
                 result['time'] = frame_num * self.config.frame_dt
                 result['revolutions'] = result['time'] * self.config.RPM / 60.0
                 
                 lacey_data.append(result)
                 
-                # Progress indicator
                 if i % 10 == 0 or i == len(files_to_read):
                     progress = (i / len(files_to_read)) * 100
                     print(f"    Processing: {progress:5.1f}% complete ({i}/{len(files_to_read)})")
@@ -374,7 +354,6 @@ class LaceyDataProcessor:
         if not lacey_data:
             raise ValueError("No data successfully processed")
         
-        # Convert to DataFrame
         self.lacey_history = pd.DataFrame(lacey_data)
         print(f"  ✔ Time series analysis complete")
         
@@ -394,7 +373,6 @@ class LaceyDataProcessor:
                 result = self.calculate_lacey_for_frame(df)
                 lacey_values.append(result['lacey_index'])
                 
-                # Progress indicator
                 if i % 5 == 0 or i == len(files_to_read):
                     progress = (i / len(files_to_read)) * 100
                     print(f"    Processing: {progress:5.1f}% complete ({i}/{len(files_to_read)})")
@@ -403,7 +381,6 @@ class LaceyDataProcessor:
                 print(f"  ✗ Error processing frame {frame_num}: {e}")
                 continue
         
-        # Calculate steady state statistics
         lacey_values = np.array(lacey_values)
         lacey_values = lacey_values[~np.isnan(lacey_values)]
         
@@ -433,7 +410,6 @@ class LaceyVisualizer:
         """Plot Lacey index time series"""
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
         
-        # Plot 1: Lacey Index vs Time
         ax1.plot(lacey_history['time'], lacey_history['lacey_index'], 
                 'b-', linewidth=2, label='Lacey Index')
         ax1.axhline(y=0.95, color='g', linestyle='--', linewidth=1.5, 
@@ -442,13 +418,12 @@ class LaceyVisualizer:
                    label='Moderate Mixing (M=0.75)')
         ax1.set_xlabel('Time [s]', fontsize=12, fontweight='bold')
         ax1.set_ylabel('Lacey Index', fontsize=12, fontweight='bold')
-        ax1.set_title(f'Mixing Quality Evolution - f{self.config.scale_factor} se{self.config.surface_energy}',
+        ax1.set_title(f'Mixing Quality Evolution - {self.config.experiment_type} f{self.config.scale_factor} se{self.config.surface_energy}',
                      fontsize=14, fontweight='bold')
         ax1.grid(True, alpha=0.3)
         ax1.legend(loc='lower right')
         ax1.set_ylim([0, 1.05])
         
-        # Plot 2: Lacey Index vs Revolutions
         ax2.plot(lacey_history['revolutions'], lacey_history['lacey_index'],
                 'r-', linewidth=2)
         ax2.axhline(y=0.95, color='g', linestyle='--', linewidth=1.5)
@@ -459,7 +434,6 @@ class LaceyVisualizer:
         ax2.grid(True, alpha=0.3)
         ax2.set_ylim([0, 1.05])
         
-        # Add text box with statistics
         steady_state_data = lacey_history[lacey_history['time'] > lacey_history['time'].max() * 0.5]
         if len(steady_state_data) > 0:
             mean_lacey = steady_state_data['lacey_index'].mean()
@@ -477,21 +451,22 @@ class LaceyVisualizer:
         """Plot bar chart comparison of steady state Lacey indices"""
         fig, ax = plt.subplots(figsize=(12, 8))
         
-        # Prepare data
         configs = []
         mean_values = []
         std_values = []
         
         for name, result in results.items():
             if 'steady_state' in result:
-                configs.append(name.replace('SUPMixerOutput_', ''))
+                # Extract experiment type and parameters for label
+                exp_type = result['dir_info']['experiment_type']
+                scale_f = result['dir_info']['scale_factor']
+                configs.append(f"{exp_type}_f{scale_f}")
                 mean_values.append(result['steady_state']['mean_lacey'])
                 std_values.append(result['steady_state']['std_lacey'])
         
         x_pos = np.arange(len(configs))
         colors = plt.cm.viridis(np.linspace(0, 0.9, len(configs)))
         
-        # Bar chart with error bars
         bars = ax.bar(x_pos, mean_values, yerr=std_values, capsize=5,
                       color=colors, edgecolor='black', linewidth=1.5, alpha=0.8)
         
@@ -502,7 +477,6 @@ class LaceyVisualizer:
         ax.set_xticklabels(configs, rotation=45, ha='right')
         ax.set_ylim([0, 1.1])
         
-        # Add reference lines
         ax.axhline(y=0.95, color='g', linestyle='--', linewidth=1.5, alpha=0.5, label='Excellent (M=0.95)')
         ax.axhline(y=0.85, color='orange', linestyle='--', linewidth=1.5, alpha=0.5, label='Good (M=0.85)')
         ax.axhline(y=0.75, color='red', linestyle='--', linewidth=1.5, alpha=0.5, label='Moderate (M=0.75)')
@@ -510,7 +484,6 @@ class LaceyVisualizer:
         ax.grid(True, axis='y', alpha=0.3, linewidth=0.8)
         ax.legend(loc='upper right', frameon=True, fancybox=False, edgecolor='black', fontsize=10)
         
-        # Add value labels on bars
         for bar, mean, std in zip(bars, mean_values, std_values):
             height = bar.get_height()
             ax.text(bar.get_x() + bar.get_width()/2., height + std + 0.02,
@@ -530,16 +503,17 @@ class LaceyVisualizer:
             for (name, result), color in zip(results.items(), colors):
                 if 'lacey_history' in result:
                     history = result['lacey_history']
-                    label = name.replace('SUPMixerOutput_', '')
+                    exp_type = result['dir_info']['experiment_type']
+                    scale_f = result['dir_info']['scale_factor']
+                    label = f"{exp_type}_f{scale_f}"
                     ax.plot(history['time'], history['lacey_index'],
                            '-', linewidth=2.4, color=color, label=label, alpha=0.8)
             
             ax.set_xlabel('Time [s]', fontsize=14, fontweight='bold')
             ax.set_ylabel('Lacey Index', fontsize=14, fontweight='bold')
-            ax.set_title('Mixing Evolution Comparison - Multiple Configurations', 
+            ax.set_title('Mixing Evolution Comparison - DualDensity & SizeDiff', 
                         fontsize=16, fontweight='bold')
             
-            # Add reference lines
             ax.axhline(y=0.95, color='g', linestyle='--', linewidth=1.5, alpha=0.5)
             ax.axhline(y=0.85, color='orange', linestyle='--', linewidth=1.5, alpha=0.5)
             ax.axhline(y=0.75, color='red', linestyle='--', linewidth=1.5, alpha=0.5)
@@ -564,18 +538,19 @@ class MultiDirectoryLaceyAnalysis:
         """Process all matching directories"""
         print("\n" + "=" * 60)
         print("MULTI-DIRECTORY LACEY INDEX ANALYSIS")
+        print("(DualDensity & SizeDiff experiments only)")
         print("=" * 60)
         print(f"Found {len(self.multi_config.directories)} directories to process")
         
         for dir_info in self.multi_config.directories:
             print(f"\n{'='*60}")
             print(f"Processing: {dir_info['name']}")
+            print(f"  Experiment Type: {dir_info['experiment_type']}")
             print(f"  Scale Factor: f{dir_info['scale_factor']}")
             print(f"  Surface Energy: se{dir_info['surface_energy']}")
             print('='*60)
             
             try:
-                # Create config for this directory
                 config = Config(
                     scale_factor=dir_info['scale_factor'],
                     surface_energy=dir_info['surface_energy'],
@@ -585,18 +560,14 @@ class MultiDirectoryLaceyAnalysis:
                     experiment_type=dir_info['experiment_type']
                 )
                 
-                # Process directory
                 processor = LaceyDataProcessor(config)
                 
-                # Calculate time series
                 print("\n  Processing time series...")
                 lacey_history = processor.process_time_series()
                 
-                # Calculate steady state
                 print("\n  Processing steady state...")
                 steady_state = processor.process_steady_state()
                 
-                # Store results
                 self.results[dir_info['name']] = {
                     'config': config,
                     'dir_info': dir_info,
@@ -604,13 +575,11 @@ class MultiDirectoryLaceyAnalysis:
                     'steady_state': steady_state
                 }
                 
-                # Save individual results
                 self.save_individual_results(dir_info['name'])
                 
-                # Generate plots if enabled
                 if self.multi_config.enable_plotting:
                     visualizer = LaceyVisualizer(config)
-                    plot_path = config.output_path / f'lacey_time_series_f{config.scale_factor}.png'
+                    plot_path = config.output_path / f'lacey_time_series_{config.experiment_type}_f{config.scale_factor}c{config.surface_energy}.png'
                     visualizer.plot_time_series(lacey_history, plot_path)
                     print(f"  ✔ Plot saved to: {plot_path}")
                 
@@ -620,7 +589,6 @@ class MultiDirectoryLaceyAnalysis:
                 traceback.print_exc()
                 continue
         
-        # Generate comparison results
         if len(self.results) > 1:
             self.generate_comparison()
     
@@ -628,17 +596,20 @@ class MultiDirectoryLaceyAnalysis:
         """Save results for individual directory"""
         result = self.results[dir_name]
         config = result['config']
+        exp_type = config.experiment_type
         
-        # Save time series data
+        # Save time series data with experiment type and cohesion in filename
         result['lacey_history'].to_csv(
-            config.output_path / f'lacey_time_series_f{config.scale_factor}.csv',
+            config.output_path / f'lacey_time_series_{exp_type}_f{config.scale_factor}c{config.surface_energy}.csv',
             index=False
         )
         
-        # Save steady state summary
+        # Save steady state summary with experiment type and cohesion in filename
         steady_state = result['steady_state']
-        with open(config.output_path / f'lacey_summary_f{config.scale_factor}.txt', 'w') as f:
-            f.write(f"Lacey Index Analysis Summary - Scale Factor f{config.scale_factor}\n")
+        with open(config.output_path / f'lacey_summary_{exp_type}_f{config.scale_factor}c{config.surface_energy}.txt', 'w') as f:
+            f.write(f"Lacey Index Analysis Summary\n")
+            f.write(f"Experiment Type: {exp_type}\n")
+            f.write(f"Scale Factor: f{config.scale_factor}\n")
             f.write(f"Surface Energy: se{config.surface_energy}\n")
             f.write(f"Frame time interval: {config.frame_dt*1000:.1f} ms\n")
             f.write("=" * 60 + "\n\n")
@@ -656,20 +627,6 @@ class MultiDirectoryLaceyAnalysis:
             f.write(f"  Light particle density: {config.density_light} kg/m³\n")
             f.write(f"  Heavy particle density: {config.density_heavy} kg/m³\n")
             
-            # Add mixing quality assessment
-            f.write("\nMixing Quality Assessment:\n")
-            if steady_state['mean_lacey'] >= 0.95:
-                f.write("  ★★★★★ Excellent mixing (M ≥ 0.95)\n")
-            elif steady_state['mean_lacey'] >= 0.85:
-                f.write("  ★★★★☆ Good mixing (0.85 ≤ M < 0.95)\n")
-            elif steady_state['mean_lacey'] >= 0.75:
-                f.write("  ★★★☆☆ Moderate mixing (0.75 ≤ M < 0.85)\n")
-            elif steady_state['mean_lacey'] >= 0.65:
-                f.write("  ★★☆☆☆ Poor mixing (0.65 ≤ M < 0.75)\n")
-            else:
-                f.write("  ★☆☆☆☆ Very poor mixing (M < 0.65)\n")
-            
-            # Add mixing quality assessment
             f.write("\nMixing Quality Assessment:\n")
             if steady_state['mean_lacey'] >= 0.95:
                 f.write("  ★★★★★ Excellent mixing (M ≥ 0.95)\n")
@@ -690,19 +647,19 @@ class MultiDirectoryLaceyAnalysis:
         print("GENERATING COMPARISON ANALYSIS")
         print("=" * 60)
         
-        # Create comparison directory
+        # Create comparison directory with experiment type info
         if self.multi_config.filter_cohesion:
-            comparison_dir = Path(f'sta_results/lacey_results/se{self.multi_config.filter_cohesion}/comparison/')
+            comparison_dir = Path(f'sta_results/lacey_results/comparison_se{self.multi_config.filter_cohesion}/')
         else:
             comparison_dir = Path('sta_results/lacey_results/comparison/')
         comparison_dir.mkdir(parents=True, exist_ok=True)
         
-        # Collect comparison data
         comparison_data = []
         for name, result in self.results.items():
             steady_state = result['steady_state']
             comparison_data.append({
                 'Directory': name,
+                'Experiment_Type': result['dir_info']['experiment_type'],
                 'Scale_Factor': result['dir_info']['scale_factor'],
                 'Surface_Energy': result['dir_info']['surface_energy'],
                 'Frame_Interval_ms': result['config'].frame_dt * 1000,
@@ -714,28 +671,25 @@ class MultiDirectoryLaceyAnalysis:
                 'N_Samples': steady_state['n_samples']
             })
         
-        # Save comparison CSV
         comparison_df = pd.DataFrame(comparison_data)
-        comparison_df = comparison_df.sort_values(['Scale_Factor', 'Surface_Energy'])
-        comparison_df.to_csv(comparison_dir / 'lacey_comparison.csv', index=False)
-        print(f"  ✔ Comparison data saved to: {comparison_dir / 'lacey_comparison.csv'}")
+        comparison_df = comparison_df.sort_values(['Experiment_Type', 'Scale_Factor', 'Surface_Energy'])
+        comparison_df.to_csv(comparison_dir / 'lacey_comparison_DualDensity_SizeDiff.csv', index=False)
+        print(f"  ✔ Comparison data saved to: {comparison_dir / 'lacey_comparison_DualDensity_SizeDiff.csv'}")
         
-        # Generate comparison plots
         if self.multi_config.enable_plotting:
-            visualizer = LaceyVisualizer(Config())  # Use default config for plotting
+            visualizer = LaceyVisualizer(Config(experiment_type='SizeDiff'))
             
-            # Generate separate plots
             visualizer.plot_comparison_bar_chart(
                 self.results, 
-                comparison_dir / 'lacey_comparison_bar.png'
+                comparison_dir / 'lacey_comparison_bar_DualDensity_SizeDiff.png'
             )
-            print(f"  ✔ Bar chart saved to: {comparison_dir / 'lacey_comparison_bar.png'}")
+            print(f"  ✔ Bar chart saved to: {comparison_dir / 'lacey_comparison_bar_DualDensity_SizeDiff.png'}")
             
             visualizer.plot_comparison_time_series(
                 self.results,
-                comparison_dir / 'lacey_comparison_time_series.png'
+                comparison_dir / 'lacey_comparison_time_series_DualDensity_SizeDiff.png'
             )
-            print(f"  ✔ Time series comparison saved to: {comparison_dir / 'lacey_comparison_time_series.png'}")
+            print(f"  ✔ Time series comparison saved to: {comparison_dir / 'lacey_comparison_time_series_DualDensity_SizeDiff.png'}")
 
 # ======================== Print Functions ========================
 def print_header(title: str, width: int = 60):
@@ -751,22 +705,19 @@ def print_section(title: str, width: int = 40):
 
 # ======================== Main Program ========================
 def main():
-    """
-    Main program for Lacey index analysis
-    """
+    """Main program for Lacey index analysis"""
     # ==================== Configurable Parameters ====================
-    base_path = "/media/huyuze/Fanxiang/DEME_Data/backup251115"  # Search directory
-    filter_cohesion = "080"  # Only process specific cohesion data, set to None for all
-    enable_plotting = True  # Generate plots
-    steady_state_fraction = 1  # Use last 50% of data for steady state
+    base_path = "/media/huyuze/Fanxiang/DEME_Data/backup251115"
+    filter_cohesion = "080"
+    enable_plotting = True
+    steady_state_fraction = 1
     
     # ==================== Run Analysis ====================
     print_header("SUP MIXER LACEY INDEX ANALYSIS")
-    print("Version: Multi-directory comparison with three format support")
+    print("Version: DualDensity & SizeDiff experiments only")
     start_time = datetime.datetime.now()
     
     try:
-        # Initialize multi-directory configuration
         multi_config = MultiDirectoryConfig(
             base_path=base_path,
             filter_cohesion=filter_cohesion,
@@ -777,7 +728,6 @@ def main():
         if not multi_config.directories:
             print("✗ No matching directories found!")
             print(f"  Searched for patterns:")
-            print(f"    - SUPMixerOutput_f*se{filter_cohesion if filter_cohesion else '*'}")
             print(f"    - SUPMixerOutput_SizeDiff_f*se{filter_cohesion if filter_cohesion else '*'}")
             print(f"    - SUPMixerOutput_DualDensity_f*se{filter_cohesion if filter_cohesion else '*'}")
             print(f"  In path: {base_path}")
@@ -794,27 +744,26 @@ def main():
             frame_dt_ms = 5.0 if scale_f == 1 else 1.0
             print(f"  - {d['name']} (frame interval: {frame_dt_ms} ms)")
         
-        # Process all directories
         analysis = MultiDirectoryLaceyAnalysis(multi_config)
         analysis.process_all_directories()
         
-        # Performance summary
         print_header("ANALYSIS COMPLETE")
         elapsed = (datetime.datetime.now() - start_time).total_seconds()
         print(f"  Total Processing Time: {elapsed:.2f} seconds")
         print(f"  Directories Processed: {len(analysis.results)}")
         
         if filter_cohesion:
-            print(f"  Results saved to: sta_results/lacey_results/se{filter_cohesion}/")
+            print(f"  Results saved to: sta_results/lacey_results/[DualDensity|SizeDiff]/se{filter_cohesion}/")
         else:
-            print(f"  Results saved to: sta_results/lacey_results/")
+            print(f"  Results saved to: sta_results/lacey_results/[DualDensity|SizeDiff]/")
         
-        # Print summary of mixing quality
         print("\n  Mixing Quality Summary:")
         for name, result in analysis.results.items():
             steady_state = result['steady_state']
+            exp_type = result['dir_info']['experiment_type']
+            scale_f = result['dir_info']['scale_factor']
             quality = "★" * min(5, max(1, int(steady_state['mean_lacey'] * 5 + 0.5)))
-            print(f"    {name.replace('SUPMixerOutput_', '')}: M = {steady_state['mean_lacey']:.3f} {quality}")
+            print(f"    {exp_type}_f{scale_f}: M = {steady_state['mean_lacey']:.3f} {quality}")
         
         print("\n✓ All analyses complete!")
         print("=" * 60)

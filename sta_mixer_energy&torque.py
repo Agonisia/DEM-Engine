@@ -6,6 +6,8 @@ SUP混合器模拟数据处理脚本
   - SUPMixerOutput_f{scale_factor}se{cohesion_code}
   - SUPMixerOutput_SizeDiff_f{scale_factor}se{cohesion_code}
   - SUPMixerOutput_DualDensity_f{scale_factor}se{cohesion_code}
+Fixed: 添加对f1帧时间间隔的特殊处理
+Updated: 输出结构与PDF分析脚本保持一致
 """
 
 import os
@@ -13,33 +15,35 @@ import re
 import pandas as pd
 import numpy as np
 from pathlib import Path
+from typing import Dict, List, Tuple, Optional
 
-def find_sup_directories(base_path=".", pattern_str=None):
+def get_frame_dt(scale_factor):
+    """根据scale_factor获取帧时间间隔"""
+    if scale_factor == 1:
+        return 5e-3  # f1 using 5ms interval
+    else:
+        return 1e-3  # others using 1ms interval
+
+def find_sup_directories(base_path="."):
     """
     查找所有符合SUPMixerOutput格式的目录（支持三种格式）
     
-    参数:
-        base_path: 基础搜索路径，默认为当前目录"."
-        pattern_str: 自定义正则表达式模式（可选）
-    
     返回:
-        包含(目录路径, scale_factor, cohesion_code, experiment_type)元组的列表
+        包含目录信息字典的列表
     """
     directories = []
     
-    # 确保基础路径存在
     if not os.path.exists(base_path):
         print(f"警告：路径 {base_path} 不存在")
         return directories
     
     # 定义三种模式
     patterns = [
-        ('Standard', re.compile(r'SUPMixerOutput_f(\d+(?:\.\d+)?)se(\d{3})$')),
+        ('standard', re.compile(r'SUPMixerOutput_f(\d+(?:\.\d+)?)se(\d{3})$')),
         ('SizeDiff', re.compile(r'SUPMixerOutput_SizeDiff_f(\d+(?:\.\d+)?)se(\d{3})$')),
         ('DualDensity', re.compile(r'SUPMixerOutput_DualDensity_f(\d+(?:\.\d+)?)se(\d{3})$'))
     ]
     
-    # 遍历目录查找匹配的文件夹
     for item in os.listdir(base_path):
         item_path = os.path.join(base_path, item)
         if os.path.isdir(item_path):
@@ -48,319 +52,322 @@ def find_sup_directories(base_path=".", pattern_str=None):
                 if match:
                     scale_factor = float(match.group(1))
                     cohesion_code = match.group(2)
-                    directories.append((item_path, scale_factor, cohesion_code, exp_type))
-                    break  # 找到匹配就跳出内层循环
+                    frame_dt = get_frame_dt(scale_factor)
+                    directories.append({
+                        'path': item_path,
+                        'name': item,
+                        'scale_factor': scale_factor,
+                        'surface_energy': cohesion_code,
+                        'dir_type': exp_type,
+                        'frame_dt': frame_dt
+                    })
+                    break
     
-    # 按experiment_type，然后scale_factor排序
-    directories.sort(key=lambda x: (x[3], x[1]))
-    
-    # 按实验类型分组显示
-    print(f"找到 {len(directories)} 个SUP输出目录:")
-    exp_groups = {}
-    for dir_path, sf, cc, exp_type in directories:
-        if exp_type not in exp_groups:
-            exp_groups[exp_type] = []
-        exp_groups[exp_type].append((dir_path, sf, cc))
-    
-    for exp_type in ['Standard', 'SizeDiff', 'DualDensity']:
-        if exp_type in exp_groups:
-            print(f"\n  {exp_type}:")
-            for dir_path, sf, cc in exp_groups[exp_type]:
-                dir_name = os.path.basename(dir_path)
-                print(f"    - {dir_name} (f={sf}, se={cc})")
+    # 按dir_type, surface_energy, scale_factor排序
+    type_order = {'standard': 0, 'SizeDiff': 1, 'DualDensity': 2}
+    directories.sort(key=lambda x: (type_order.get(x['dir_type'], 99), 
+                                    x['surface_energy'], 
+                                    x['scale_factor']))
     
     return directories
 
-def read_kinetic_energy_file(directory_path):
+def group_directories(directories: List[Dict]) -> Dict[Tuple[str, str], List[Dict]]:
     """
-    读取指定目录下的kinetic_energy_history.csv文件
-    
-    参数:
-        directory_path: 包含CSV文件的目录路径
+    按 (dir_type, surface_energy) 分组目录
     
     返回:
-        DataFrame或None（如果文件不存在）
+        {(dir_type, surface_energy): [dir_info, ...], ...}
     """
+    groups = {}
+    for d in directories:
+        key = (d['dir_type'], d['surface_energy'])
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(d)
+    return groups
+
+def read_kinetic_energy_file(directory_path):
+    """读取指定目录下的kinetic_energy_history.csv文件"""
     csv_path = os.path.join(directory_path, "kinetic_energy_history.csv")
     
     if not os.path.exists(csv_path):
-        print(f"警告：文件 {csv_path} 不存在")
+        print(f"  警告：文件 {csv_path} 不存在")
         return None
     
     try:
         df = pd.read_csv(csv_path)
         
         # 检查必需的列是否存在（支持新旧两种格式）
-        # 新格式使用 TotalKE(J)，旧格式使用 KineticEnergy(J)
         has_new_format = all(col in df.columns for col in ['Time(s)', 'TotalKE(J)', 'MixerTorque(Nm)'])
         has_old_format = all(col in df.columns for col in ['Time(s)', 'KineticEnergy(J)', 'MixerTorque(Nm)'])
         
         if has_new_format:
-            # 将新格式列名重命名为统一格式
             df = df.rename(columns={'TotalKE(J)': 'KineticEnergy(J)'})
         elif not has_old_format:
-            print(f"警告：文件 {csv_path} 缺少必需的列")
-            print(f"  需要: Time(s), TotalKE(J)/KineticEnergy(J), MixerTorque(Nm)")
-            print(f"  实际列: {list(df.columns)}")
+            print(f"  警告：文件 {csv_path} 缺少必需的列")
             return None
             
         return df
     except Exception as e:
-        print(f"错误：读取文件 {csv_path} 时出错: {e}")
+        print(f"  错误：读取文件 {csv_path} 时出错: {e}")
         return None
 
-def create_comparison_dataframes(directories, filter_cohesion="000", filter_exp_type=None):
+def process_group(group_dirs: List[Dict], auto_interpolate: bool = True, n_points: int = 1000) -> Tuple[pd.DataFrame, pd.DataFrame, Dict]:
     """
-    创建动能和扭矩的比较数据框
+    处理一个分组内的所有目录，生成比较数据
     
     参数:
-        directories: 包含(目录路径, scale_factor, cohesion_code, exp_type)元组的列表
-        filter_cohesion: 只处理特定cohesion代码的数据，默认为"000"
-        filter_exp_type: 只处理特定实验类型的数据，None表示处理所有
+        group_dirs: 目录信息列表
+        auto_interpolate: 当数据长度不一致时自动插值
+        n_points: 插值点数
     
     返回:
-        (动能DataFrame, 扭矩DataFrame)元组
+        (动能DataFrame, 扭矩DataFrame, 元数据字典)
     """
-    kinetic_energy_data = {}
-    mixer_torque_data = {}
+    # 先读取所有数据
+    raw_data = {}
+    metadata = {}
     
-    for dir_path, scale_factor, cohesion_code, exp_type in directories:
-        # 如果指定了过滤条件，只处理符合条件的数据
-        if filter_cohesion and cohesion_code != filter_cohesion:
+    for dir_info in group_dirs:
+        df = read_kinetic_energy_file(dir_info['path'])
+        if df is None:
             continue
-        if filter_exp_type and exp_type != filter_exp_type:
-            continue
-            
-        df = read_kinetic_energy_file(dir_path)
-        if df is not None:
-            # 使用scale_factor和实验类型作为列名
-            if exp_type == 'Standard':
-                col_name = f"f{scale_factor}"
-            else:
-                col_name = f"{exp_type}_f{scale_factor}"
-            
-            # 如果有多个cohesion值，可以在列名中包含
-            if filter_cohesion is None:
-                col_name = f"{col_name}_se{cohesion_code}"
-            
-            # 提取时间、动能和扭矩数据
-            time_col = df['Time(s)'].values
-            ke_col = df['KineticEnergy(J)'].values
-            torque_col = df['MixerTorque(Nm)'].values
-            
-            # 存储数据
-            if 'Time(s)' not in kinetic_energy_data:
-                kinetic_energy_data['Time(s)'] = time_col
-                mixer_torque_data['Time(s)'] = time_col
-            
-            kinetic_energy_data[col_name] = ke_col
-            mixer_torque_data[col_name] = torque_col
+        
+        # 列名只用 f{scale_factor}
+        sf = dir_info['scale_factor']
+        col_name = f"f{int(sf) if sf == int(sf) else sf}"
+        
+        raw_data[col_name] = {
+            'time': df['Time(s)'].values,
+            'ke': df['KineticEnergy(J)'].values,
+            'torque': df['MixerTorque(Nm)'].values
+        }
+        
+        metadata[col_name] = {
+            'scale_factor': dir_info['scale_factor'],
+            'surface_energy': dir_info['surface_energy'],
+            'dir_type': dir_info['dir_type'],
+            'frame_dt': dir_info['frame_dt'],
+            'n_points': len(df)
+        }
     
-    # 创建DataFrame
-    ke_df = pd.DataFrame(kinetic_energy_data) if kinetic_energy_data else pd.DataFrame()
-    torque_df = pd.DataFrame(mixer_torque_data) if mixer_torque_data else pd.DataFrame()
+    if not raw_data:
+        return pd.DataFrame(), pd.DataFrame(), metadata
     
-    return ke_df, torque_df
+    # 检查数据长度是否一致
+    lengths = [len(d['time']) for d in raw_data.values()]
+    lengths_consistent = len(set(lengths)) == 1
+    
+    if lengths_consistent:
+        # 长度一致，直接构建 DataFrame
+        print(f"  ✓ 数据长度一致 ({lengths[0]} 点)，直接合并")
+        first_key = list(raw_data.keys())[0]
+        kinetic_energy_data = {'Time(s)': raw_data[first_key]['time']}
+        mixer_torque_data = {'Time(s)': raw_data[first_key]['time']}
+        
+        for col_name, data in raw_data.items():
+            kinetic_energy_data[col_name] = data['ke']
+            mixer_torque_data[col_name] = data['torque']
+    else:
+        # 长度不一致
+        print(f"  ⚠ 数据长度不一致: {dict(zip(raw_data.keys(), lengths))}")
+        
+        if auto_interpolate:
+            print(f"  ✓ 自动插值到统一时间网格 ({n_points} 点)")
+            
+            # 找到公共时间范围
+            time_min = max(d['time'].min() for d in raw_data.values())
+            time_max = min(d['time'].max() for d in raw_data.values())
+            common_time = np.linspace(time_min, time_max, n_points)
+            
+            kinetic_energy_data = {'Time(s)': common_time}
+            mixer_torque_data = {'Time(s)': common_time}
+            
+            for col_name, data in raw_data.items():
+                kinetic_energy_data[col_name] = np.interp(common_time, data['time'], data['ke'])
+                mixer_torque_data[col_name] = np.interp(common_time, data['time'], data['torque'])
+        else:
+            # 不插值，用 NaN 填充
+            print(f"  ✓ 使用最长时间序列，短数据用 NaN 填充")
+            max_len = max(lengths)
+            max_key = [k for k, d in raw_data.items() if len(d['time']) == max_len][0]
+            
+            kinetic_energy_data = {'Time(s)': raw_data[max_key]['time']}
+            mixer_torque_data = {'Time(s)': raw_data[max_key]['time']}
+            
+            for col_name, data in raw_data.items():
+                if len(data['ke']) == max_len:
+                    kinetic_energy_data[col_name] = data['ke']
+                    mixer_torque_data[col_name] = data['torque']
+                else:
+                    # 用 NaN 填充
+                    ke_padded = np.full(max_len, np.nan)
+                    torque_padded = np.full(max_len, np.nan)
+                    ke_padded[:len(data['ke'])] = data['ke']
+                    torque_padded[:len(data['torque'])] = data['torque']
+                    kinetic_energy_data[col_name] = ke_padded
+                    mixer_torque_data[col_name] = torque_padded
+    
+    ke_df = pd.DataFrame(kinetic_energy_data)
+    torque_df = pd.DataFrame(mixer_torque_data)
+    
+    return ke_df, torque_df, metadata
 
-def interpolate_data(dataframes, n_points=1000):
-    """
-    插值数据以处理不同时间步长的情况
-    
-    参数:
-        dataframes: (动能DataFrame, 扭矩DataFrame)元组
-        n_points: 插值点数，默认1000
-    
-    返回:
-        插值后的(动能DataFrame, 扭矩DataFrame)元组
-    """
-    ke_df, torque_df = dataframes
-    
+def interpolate_data(ke_df, torque_df, metadata, n_points=1000):
+    """插值数据以处理不同时间步长的情况"""
     if ke_df.empty or torque_df.empty:
         return ke_df, torque_df
     
-    # 找到公共时间范围
     time_min = ke_df['Time(s)'].min()
     time_max = ke_df['Time(s)'].max()
-    
-    # 创建统一的时间网格
     common_time = np.linspace(time_min, time_max, n_points)
     
-    # 插值数据
     ke_interpolated = {'Time(s)': common_time}
     torque_interpolated = {'Time(s)': common_time}
     
-    for col in ke_df.columns[1:]:  # 跳过Time列
+    for col in ke_df.columns[1:]:
         ke_interpolated[col] = np.interp(common_time, ke_df['Time(s)'], ke_df[col])
         torque_interpolated[col] = np.interp(common_time, torque_df['Time(s)'], torque_df[col])
     
     return pd.DataFrame(ke_interpolated), pd.DataFrame(torque_interpolated)
 
-def save_comparison_files(ke_df, torque_df, output_dir="sta_results/torque&energy", suffix=""):
+def save_group_results(ke_df, torque_df, metadata, dir_type, surface_energy, base_output="sta_results"):
     """
-    保存比较数据到CSV文件
+    保存分组结果到对应目录
     
-    参数:
-        ke_df: 动能比较DataFrame
-        torque_df: 扭矩比较DataFrame
-        output_dir: 输出目录
-        suffix: 文件名后缀
+    输出结构: sta_results/{dir_type}_se{surface_energy}/
     """
-    # 创建输出目录（如果不存在）
-    os.makedirs(output_dir, exist_ok=True)
-    print(f"\n输出目录: {output_dir}")
+    # 构建输出路径 - 与PDF脚本保持一致
+    output_dir = Path(base_output) / f"{dir_type}_se{surface_energy}"
+    output_dir.mkdir(parents=True, exist_ok=True)
     
-    # 构建输出文件路径
-    ke_filename = f"kinetic_energy_comparison{suffix}.csv"
-    torque_filename = f"mixer_torque_comparison{suffix}.csv"
-    ke_output_path = os.path.join(output_dir, ke_filename)
-    torque_output_path = os.path.join(output_dir, torque_filename)
+    # 保存数据文件
+    ke_df.to_csv(output_dir / "kinetic_energy_comparison.csv", index=False, float_format='%.6e')
+    torque_df.to_csv(output_dir / "mixer_torque_comparison.csv", index=False, float_format='%.6e')
     
-    # 保存文件
-    ke_df.to_csv(ke_output_path, index=False, float_format='%.6e')
-    torque_df.to_csv(torque_output_path, index=False, float_format='%.6e')
+    # 保存元数据
+    with open(output_dir / "torque_energy_metadata.txt", 'w') as f:
+        f.write(f"SUP Mixer Torque & Energy Comparison\n")
+        f.write(f"Directory Type: {dir_type}\n")
+        f.write(f"Surface Energy: se{surface_energy}\n")
+        f.write("=" * 50 + "\n\n")
+        
+        for col_name, meta in sorted(metadata.items(), key=lambda x: x[1]['scale_factor']):
+            f.write(f"{col_name}:\n")
+            f.write(f"  Scale Factor: f{meta['scale_factor']}\n")
+            f.write(f"  Frame Interval: {meta['frame_dt']*1000:.1f} ms\n")
+            f.write(f"  Data Points: {meta['n_points']}\n")
+            
+            # 添加统计信息
+            if col_name in ke_df.columns:
+                f.write(f"  KE Max: {ke_df[col_name].max():.4e} J\n")
+                f.write(f"  KE Mean: {ke_df[col_name].mean():.4e} J\n")
+                f.write(f"  Torque Max: {torque_df[col_name].abs().max():.4e} Nm\n")
+                f.write(f"  Torque Mean: {torque_df[col_name].abs().mean():.4e} Nm\n")
+            f.write("\n")
     
-    print(f"文件已保存:")
-    print(f"  - 动能比较: {ke_output_path}")
-    print(f"  - 扭矩比较: {torque_output_path}")
+    return output_dir
 
-def analyze_scale_factor_groups(base_path="."):
-    """
-    分析不同实验类型和cohesion代码下的scale factor组
+def print_directories_info(directories):
+    """打印目录信息"""
+    print(f"\n找到 {len(directories)} 个SUP输出目录:")
     
-    参数:
-        base_path: 基础搜索路径
-    """
-    all_dirs = find_sup_directories(base_path)
-    
-    # 按实验类型和cohesion代码分组
-    groups = {}
-    for dir_path, sf, cc, exp_type in all_dirs:
-        key = (exp_type, cc)
-        if key not in groups:
-            groups[key] = []
-        groups[key].append((dir_path, sf, cc))
-    
-    print(f"\n发现的实验组:")
-    for (exp_type, cc), dirs in sorted(groups.items()):
-        print(f"  {exp_type} - Cohesion {cc}: {len(dirs)} 个scale factors")
-        for _, sf, _ in sorted(dirs, key=lambda x: x[1]):
-            print(f"    - f{sf}")
-    
-    return groups
+    # 按类型分组显示
+    groups = group_directories(directories)
+    for (dir_type, se), dirs in sorted(groups.items()):
+        print(f"\n  {dir_type}_se{se}:")
+        for d in sorted(dirs, key=lambda x: x['scale_factor']):
+            print(f"    - f{d['scale_factor']} (dt={d['frame_dt']*1000:.1f}ms)")
 
 def main():
-    """
-    主函数：执行完整的数据处理流程
-    """
+    """主函数"""
     print("=" * 60)
-    print("SUP混合器数据处理脚本 - 支持多种目录格式")
+    print("SUP混合器数据处理脚本 - 统一输出结构版本")
+    print("输出结构: sta_results/{dir_type}_se{surface_energy}/")
     print("=" * 60)
     
-    # 可配置参数
-    base_path = "/media/huyuze/Fanxiang/DEME_Data/backup251115"  # 搜索目录
-    filter_cohesion = "020"  # 只处理特定cohesion的数据，设为None处理所有
-    filter_exp_type = None  # 只处理特定实验类型，None处理所有，可选值: 'Standard', 'SizeDiff', 'DualDensity'
-    use_interpolation = False  # 是否使用插值
-    separate_by_type = False  # 是否按实验类型分别保存文件
+    # ==================== 可配置参数 ====================
+    base_path = "/media/huyuze/Fanxiang/DEME_Data/backup251115"
+    filter_cohesion = "000"       # 只处理特定cohesion，None表示处理所有
+    filter_type = None            # 只处理特定类型，None表示处理所有
+    auto_interpolate = True       # 数据长度不一致时自动插值
+    interpolate_points = 1000     # 插值点数
+    base_output = "sta_results"   # 基础输出目录
+    # ====================================================
     
     # 1. 查找所有SUP输出目录
     directories = find_sup_directories(base_path)
     
     if not directories:
         print("\n错误：未找到任何SUP输出目录")
-        print("请确保目录格式为以下之一:")
-        print("  - SUPMixerOutput_f{数字}se{三位数字}")
-        print("  - SUPMixerOutput_SizeDiff_f{数字}se{三位数字}")
-        print("  - SUPMixerOutput_DualDensity_f{数字}se{三位数字}")
         return
     
-    # 2. 分析发现的目录
+    print_directories_info(directories)
+    
+    # 2. 显示配置
     print(f"\n分析配置:")
     print(f"  - 基础路径: {base_path}")
     print(f"  - Cohesion过滤: {filter_cohesion if filter_cohesion else '无(处理所有)'}")
-    print(f"  - 实验类型过滤: {filter_exp_type if filter_exp_type else '无(处理所有)'}")
-    print(f"  - 使用插值: {'是' if use_interpolation else '否'}")
-    print(f"  - 按类型分别保存: {'是' if separate_by_type else '否'}")
+    print(f"  - 类型过滤: {filter_type if filter_type else '无(处理所有)'}")
+    print(f"  - 自动插值: {'是' if auto_interpolate else '否'}")
+    print(f"  - 插值点数: {interpolate_points}")
+    print(f"  - 输出目录: {base_output}/")
     
-    if separate_by_type:
-        # 按实验类型分别处理和保存
-        exp_types = set(d[3] for d in directories)
-        for exp_type in sorted(exp_types):
-            print(f"\n{'='*40}")
-            print(f"处理 {exp_type} 类型数据...")
-            print('='*40)
-            
-            # 创建比较数据框
-            ke_df, torque_df = create_comparison_dataframes(
-                directories, filter_cohesion, filter_exp_type=exp_type
-            )
-            
-            if ke_df.empty or torque_df.empty:
-                print(f"  警告：{exp_type} 类型无有效数据")
-                continue
-            
-            # 可选：插值数据
-            if use_interpolation:
-                print(f"  正在插值 {exp_type} 数据...")
-                ke_df, torque_df = interpolate_data((ke_df, torque_df))
-            
-            # 保存比较文件
-            output_dir = f"sta_results/torque&energy/{exp_type}"
-            save_comparison_files(ke_df, torque_df, output_dir)
-            
-            # 输出统计信息
-            print(f"\n  {exp_type} 统计:")
-            for col in ke_df.columns[1:]:
-                max_ke = ke_df[col].max()
-                max_torque = torque_df[col].abs().max()
-                print(f"    {col}: KE_max={max_ke:.3e}J, T_max={max_torque:.3e}Nm")
-    else:
-        # 处理所有数据并合并保存
-        print("\n正在读取和处理数据...")
-        ke_df, torque_df = create_comparison_dataframes(
-            directories, filter_cohesion, filter_exp_type
+    # 3. 按 (dir_type, surface_energy) 分组处理
+    groups = group_directories(directories)
+    processed_count = 0
+    
+    for (dir_type, surface_energy), group_dirs in sorted(groups.items()):
+        # 应用过滤条件
+        if filter_cohesion and surface_energy != filter_cohesion:
+            continue
+        if filter_type and dir_type != filter_type:
+            continue
+        
+        print(f"\n{'='*60}")
+        print(f"处理: {dir_type}_se{surface_energy}")
+        print(f"  包含 {len(group_dirs)} 个scale factors")
+        print('='*60)
+        
+        # 处理该分组
+        ke_df, torque_df, metadata = process_group(
+            group_dirs, 
+            auto_interpolate=auto_interpolate,
+            n_points=interpolate_points
         )
         
         if ke_df.empty or torque_df.empty:
-            print("\n错误：无法创建比较数据")
-            return
+            print(f"  ✗ 无有效数据，跳过")
+            continue
         
-        # 可选：插值数据
-        if use_interpolation:
-            print("正在插值数据...")
-            ke_df, torque_df = interpolate_data((ke_df, torque_df))
+        # 保存结果
+        output_dir = save_group_results(
+            ke_df, torque_df, metadata, 
+            dir_type, surface_energy, 
+            base_output
+        )
         
-        # 保存比较文件
-        save_comparison_files(ke_df, torque_df)
+        print(f"  ✓ 结果已保存到: {output_dir}")
         
-        # 输出统计信息
-        print("\n" + "=" * 60)
-        print("数据处理完成！")
-        print(f"  - 处理了 {len(ke_df.columns) - 1} 个模拟结果")
-        print(f"  - 时间范围: {ke_df['Time(s)'].min():.3f} - {ke_df['Time(s)'].max():.3f} 秒")
-        print(f"  - 数据点数: {len(ke_df)}")
+        # 显示统计
+        print(f"\n  统计信息:")
+        print(f"    时间范围: {ke_df['Time(s)'].min():.3f} - {ke_df['Time(s)'].max():.3f} s")
+        print(f"    数据点数: {len(ke_df)}")
+        for col in sorted(ke_df.columns[1:], key=lambda x: metadata.get(x, {}).get('scale_factor', 0)):
+            if col in metadata:
+                meta = metadata[col]
+                print(f"    {col} (dt={meta['frame_dt']*1000:.1f}ms):")
+                print(f"      KE: max={ke_df[col].max():.3e}J, mean={ke_df[col].mean():.3e}J")
+                print(f"      Torque: max={torque_df[col].abs().max():.3e}Nm")
         
-        # 输出各配置的统计（按实验类型分组显示）
-        print("\n最大值统计:")
-        
-        # 分组显示
-        standard_cols = [col for col in ke_df.columns[1:] if not col.startswith(('SizeDiff', 'DualDensity'))]
-        sizediff_cols = [col for col in ke_df.columns[1:] if col.startswith('SizeDiff')]
-        dualdensity_cols = [col for col in ke_df.columns[1:] if col.startswith('DualDensity')]
-        
-        for cols, label in [(standard_cols, "Standard"), 
-                           (sizediff_cols, "SizeDiff"), 
-                           (dualdensity_cols, "DualDensity")]:
-            if cols:
-                print(f"\n  {label}:")
-                for col in sorted(cols):
-                    max_ke = ke_df[col].max()
-                    max_torque = torque_df[col].abs().max()
-                    avg_ke = ke_df[col].mean()
-                    avg_torque = torque_df[col].abs().mean()
-                    print(f"    {col}:")
-                    print(f"      - 动能: 最大={max_ke:.3e} J, 平均={avg_ke:.3e} J")
-                    print(f"      - 扭矩: 最大={max_torque:.3e} Nm, 平均={avg_torque:.3e} Nm")
+        processed_count += 1
+    
+    # 4. 总结
+    print("\n" + "=" * 60)
+    print("处理完成!")
+    print(f"  - 处理了 {processed_count} 个分组")
+    print(f"  - 输出目录: {base_output}/")
+    print("=" * 60)
 
 if __name__ == "__main__":
     main()
