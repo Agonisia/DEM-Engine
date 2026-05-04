@@ -31,12 +31,12 @@ int main() {
     // =========================================================================
     
     // === SUP模型核心参数（与Part1保持一致） ===
-    const float my_scale_factor = 1.0f;                    // SUP缩放因子
+    const float my_scale_factor = 4.0f;                    // SUP缩放因子
     const float scale_force_index = 2.0f;                  // 力的缩放指数
     const int base_particle_count = 1600000;               // 基准粒子数量
     const float base_particle_diameter = 0.0005f;          // 基准粒子直径：0.5mm
     const float particle_density = 1000.0f;                // 颗粒密度：1000 kg/m³
-    const float particle_cohesion = 0.05f;                  // 颗粒间粘聚力
+    const float particle_cohesion = 0.15f;                  // 颗粒间粘聚力
     
     // === 根据缩放因子自动计算的参数 ===
     const float particle_diameter = base_particle_diameter * my_scale_factor;

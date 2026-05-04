@@ -1,0 +1,23 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../../../media/huyuze/Fanxiang/backup251109"
+		},
+		{
+			"path": "../../../media/huyuze/Fanxiang/backup251025"
+		},
+		{
+			"path": "../../../media/huyuze/Fanxiang1/DEME_Data/backup251115"
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"sstream": "cpp",
+			"regex": "cpp",
+			"ostream": "cpp"
+		}
+	}
+}
