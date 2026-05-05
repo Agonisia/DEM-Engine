@@ -12,10 +12,13 @@
 #include <core/utils/RuntimeData.h>
 #include <core/utils/JitHelper.h>
 
-jitify::JitCache JitHelper::kcache;
-
 const std::filesystem::path JitHelper::KERNEL_DIR = RuntimeDataHelper::data_path / "kernel";
 const std::filesystem::path JitHelper::KERNEL_INCLUDE_DIR = RuntimeDataHelper::include_path;
+
+jitify::JitCache& JitHelper::cache() {
+    static jitify::JitCache kcache;
+    return kcache;
+}
 
 JitHelper::Header::Header(const std::filesystem::path& sourcefile) {
     this->_source = JitHelper::loadSourceFile(sourcefile);
@@ -55,5 +58,5 @@ jitify::Program JitHelper::buildProgram(
     }
     */
 
-    return kcache.program(code, header_code, flags);
+    return cache().program(code, header_code, flags);
 }

@@ -9,6 +9,7 @@ services:
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
     volumes:
       - ..:/workspace/DEM-Engine
       - ../output:/workspace/DEM-Engine/build/output # change this line to your desired output directory
@@ -24,6 +25,7 @@ services:
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
     volumes:
       - ..:/workspace/DEM-Engine
       - ../output:/workspace/DEM-Engine/build/output
