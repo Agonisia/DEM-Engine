@@ -42,8 +42,10 @@ inline void DevicePtrDealloc(T*& ptr) {
     cudaPointerAttributes attrib;
     DEME_GPU_CALL(cudaPointerGetAttributes(&attrib, ptr));
 
-    if (attrib.type != cudaMemoryType::cudaMemoryTypeUnregistered)
+    if (attrib.type != cudaMemoryType::cudaMemoryTypeUnregistered) {
         DEME_GPU_CALL(cudaFree(ptr));
+        ptr = nullptr;
+    }
 }
 
 // You have to deal with it yourself if ptr is an already-used device pointer
@@ -59,8 +61,10 @@ inline void HostPtrDealloc(T*& ptr) {
     cudaPointerAttributes attrib;
     DEME_GPU_CALL(cudaPointerGetAttributes(&attrib, ptr));
 
-    if (attrib.type != cudaMemoryType::cudaMemoryTypeUnregistered)
+    if (attrib.type != cudaMemoryType::cudaMemoryTypeUnregistered) {
         DEME_GPU_CALL(cudaFreeHost(ptr));
+        ptr = nullptr;
+    }
 }
 template <typename T>
 inline void HostPtrAlloc(T*& ptr, size_t size) {
