@@ -1,0 +1,24 @@
+# Normalize text files on future commits so Windows and Docker agree on status.
+* text=auto
+
+# Shell scripts must stay LF on every platform.
+*.sh text eol=lf
+
+# Binary assets and build artifacts
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.bmp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.gz binary
+*.7z binary
+*.so binary
+*.dll binary
+*.dylib binary
+*.a binary
+*.lib binary
+*.o binary
